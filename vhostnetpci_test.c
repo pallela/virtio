@@ -4,6 +4,7 @@
 #include<string.h>
 #include<sys/un.h>
 #include<stdlib.h>
+#include"virtio.h"
 
 #define SOCKPATH "/usr/local/var/run/openvswitch/vhost-user1"
 
@@ -30,7 +31,7 @@ main()
 	int newsockfd;
 	struct sockaddr_un local,remote;
 	int len,t;
-	unsigned char buff[100];
+	unsigned char rxbuff[100],txbuff[100];
 	int recv_bytes;
         struct vhost_user_msg *msg;
 
@@ -53,23 +54,54 @@ main()
 		exit(1);
 	}
 
-	if(listen(sockfd,5) == -1) {
+	if(listen(sockfd,1) == -1) {
 		perror("listen : ");
 		exit(1);
 	}
 
-	//while(1) {
-		printf("Waitng for a connection\n");
+	printf("Waitng for a connection\n");
 
-		t =  sizeof(remote);
+	t =  sizeof(remote);
 
-		if((newsockfd = accept(sockfd,(struct sockaddr *)&remote,&t)) == -1) {
-			perror("accept : ");
-			exit(1);
+	if((newsockfd = accept(sockfd,(struct sockaddr *)&remote,&t)) == -1) {
+		perror("accept : ");
+		exit(1);
+	}
+
+	printf("connected\n");
+
+
+	while(1) {
+
+		recv_bytes = recv(newsockfd,rxbuff,100,0);
+		printf("received bytes : %d\n",recv_bytes);
+		print_hex(rxbuff,recv_bytes);
+
+		msg = (struct vhost_user_msg *) rxbuff;
+
+		printf("msg.request : %d name : %s\n",msg->request,req_names[msg->request]);
+
+		switch(msg->request) {
+
+			case VHOST_USER_GET_FEATURES:
+				memcpy(txbuff,rxbuff,recv_bytes);
+				msg = (struct vhost_user_msg *) txbuff;
+				msg->payload.u64 = (1ULL << 30);
+				msg->size = 8;
+				msg->flags &= ~VHOST_USER_VERSION_MASK;
+				msg->flags |= 0x1;
+				msg->flags |= VHOST_USER_REPLY_MASK;
+				send(newsockfd,txbuff,20,0);
+				printf("sent bytes : %d\n",20);
+				print_hex(txbuff,20);
+
+			break;
+			default:
+			printf("default\n");
 		}
 
-		printf("connected\n");
-	//}
+	}
+	
 
 
 
