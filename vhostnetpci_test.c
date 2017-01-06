@@ -94,18 +94,20 @@ void print_hex(unsigned char *buff, int len)
 
 #define RECV 1
 
+unsigned char memory_table[100*1024];
+
 main()
 {
 	int sockfd;
 	int newsockfd;
 	struct sockaddr_un local,remote;
-	int len,t;
+	int len,t,i;
 	unsigned char rxbuff[1024],txbuff[1024];
 	int recv_bytes;
 	int fdbytes;
         struct vhost_user_msg *msg;
 	struct vhost_vring_file file;
-	//struct virtio_net;
+	struct vhost_memory *table = (struct vhost_memory *) memory_table;
 
 	sockfd = socket(AF_UNIX,SOCK_STREAM,0);
 
@@ -148,6 +150,13 @@ main()
 
 		#if RECV
 		recv_bytes = recv(newsockfd,rxbuff,12,0);
+		if(recv_bytes == 0) {
+			perror("recv : ");
+			printf("received 0 bytes exiting\n");
+			close(newsockfd);
+			close(sockfd);
+			exit(1);
+		}
 
 		msg = (struct vhost_user_msg *) rxbuff;
 
@@ -183,7 +192,7 @@ main()
 				msg->flags |= VHOST_USER_VERSION;
 				msg->flags |= VHOST_USER_REPLY_MASK;
 				send(newsockfd,txbuff,20,0);
-				printf("payload : %016llx\n",msg->payload.u64);
+				printf("payload : %016llx\n",(unsigned long long int)msg->payload.u64);
 				printf("sent bytes : %d\n",20);
 				//print_hex(txbuff,20);
 
@@ -192,7 +201,7 @@ main()
 			case VHOST_USER_SET_FEATURES:
 			memcpy(txbuff,rxbuff,recv_bytes);
 			msg = (struct vhost_user_msg *) txbuff;
-			printf("payload is %016x\n",msg->payload.u64);
+			printf("payload is %016llx\n",(unsigned long long int)msg->payload.u64);
 			printf("Mergeable RX buffers %s, virtio 1 %s\n",
 					(msg->payload.u64 & (1 << VIRTIO_NET_F_MRG_RXBUF)) ? "on" : "off",
 					(msg->payload.u64 & (1ULL << VIRTIO_F_VERSION_1)) ? "on" : "off");
@@ -210,7 +219,7 @@ main()
 			msg->flags |= VHOST_USER_VERSION;
 			msg->flags |= VHOST_USER_REPLY_MASK;
 			send(newsockfd,txbuff,20,0);
-			printf("payload : %016llx\n",msg->payload.u64);
+			printf("payload : %016llx\n",(unsigned long long int)msg->payload.u64);
 			printf("\n\nsent bytes : %d\n",20);
 			//print_hex(txbuff,20);
 			printf("\n\n");
@@ -219,7 +228,7 @@ main()
 			case  VHOST_USER_SET_PROTOCOL_FEATURES:
 			memcpy(txbuff,rxbuff,recv_bytes);
 			msg = (struct vhost_user_msg *) txbuff;
-			printf("protocol features : %016x and we provided : %016x\n",msg->payload.u64,VHOST_USER_PROTOCOL_FEATURES);	
+			printf("protocol features : %016llx and we provided : %016llx\n",(unsigned long long int)msg->payload.u64,(unsigned long long int)VHOST_USER_PROTOCOL_FEATURES);	
 			break;
 
 			case VHOST_USER_GET_QUEUE_NUM:
@@ -232,7 +241,7 @@ main()
 			msg->flags |= VHOST_USER_VERSION;
 			msg->flags |= VHOST_USER_REPLY_MASK;
 			send(newsockfd,txbuff,20,0);
-			printf("payload : %016llx\n",msg->payload.u64);
+			printf("payload : %016llx\n",(unsigned long long int)msg->payload.u64);
 			printf("\n\nsent bytes : %d\n",20);
 			//print_hex(txbuff,20);
 			printf("\n\n");
@@ -243,8 +252,8 @@ main()
 			msg = (struct vhost_user_msg *) txbuff;
 			fdbytes = recv(newsockfd,&msg->fds[0],4*8,0);
 			printf("fds bytes : %d\n",fdbytes);
-			print_hex(&msg->fds[0],fdbytes);
-			printf("payload : %016llx\n",msg->payload.u64);
+			print_hex((unsigned char *)&msg->fds[0],fdbytes);
+			printf("payload : %016llx\n",(unsigned long long int)msg->payload.u64);
 		  	if (msg->payload.u64 & VHOST_USER_VRING_NOFD_MASK) {
 				printf("some issue : fd = -1\n");
 			}
@@ -262,7 +271,27 @@ main()
 			printf("payload.state.index : %u\n",msg->payload.state.index);
 			printf("payload.state.num   : %u\n",msg->payload.state.num);
 			break;
+		
+			case VHOST_USER_SET_MEM_TABLE:
+			msg = (struct vhost_user_msg *) txbuff;
+			memcpy(txbuff,rxbuff,recv_bytes);
+			printf("processing VHOST_USER_SET_MEM_TABLE , copying %u bytes\n",msg->size);
+			memcpy(table,&(msg->payload.memory),msg->size);
+			printf("nr_regions : %u\n",table->nregions);
+			printf("padding    : %u\n",table->padding);
+
+
+			for(i=0;i<table->nregions;i++) {
+				printf("region[%04d]  gpaddr : %llx memory_size : %llx userspace_addr : %llx mmap_offset : %llx\n",
+				i,
+				(unsigned long long int) table->regions[i].guest_phys_addr,
+				(unsigned long long int) table->regions[i].memory_size,
+				(unsigned long long int) table->regions[i].userspace_addr,
+				(unsigned long long int) table->regions[i].mmap_offset\
+					);
+			}
 			
+			break;	
 
 
 			default:
