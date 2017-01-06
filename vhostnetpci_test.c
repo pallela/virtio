@@ -5,6 +5,8 @@
 #include<sys/un.h>
 #include<stdlib.h>
 #include"virtio.h"
+#include <sys/eventfd.h>
+
 
 #define VHOST_USER_VERSION    0x1
 
@@ -32,8 +34,18 @@
 #endif
 
 
-
+/* Features supported by this lib. */
 #define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_MRG_RXBUF) | \
+                                (1ULL << VIRTIO_NET_F_CTRL_VQ) | \
+                                (1ULL << VIRTIO_NET_F_CTRL_RX) | \
+                                (VHOST_SUPPORTS_MQ)            | \
+				(1ULL << VIRTIO_F_VERSION_1)   | \
+                                (1ULL << VHOST_F_LOG_ALL)      | \
+                                (1ULL << VHOST_USER_F_PROTOCOL_FEATURES))
+
+
+
+/*#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_MRG_RXBUF) | \
                                 (1ULL << VIRTIO_NET_F_CTRL_VQ) | \
                                 (1ULL << VIRTIO_NET_F_CTRL_RX) | \
                                 (1ULL << VIRTIO_NET_F_GUEST_ANNOUNCE) | \
@@ -46,16 +58,20 @@
                                 (1ULL << VIRTIO_NET_F_GUEST_CSUM) | \
                                 (1ULL << VIRTIO_NET_F_GUEST_TSO4) | \
                                 (1ULL << VIRTIO_NET_F_GUEST_TSO6))
+*/
 
 #define VHOST_USER_PROTOCOL_F_MQ        0
 #define VHOST_USER_PROTOCOL_F_LOG_SHMFD 1
 #define VHOST_USER_PROTOCOL_F_RARP      2
 
+/*
 #define VHOST_USER_PROTOCOL_FEATURES    ((1ULL << VHOST_USER_PROTOCOL_F_MQ) | \
                                          (1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD) |\
                                          (1ULL << VHOST_USER_PROTOCOL_F_RARP))
+*/
 
 
+#define VHOST_USER_PROTOCOL_FEATURES    (1ULL << VHOST_USER_PROTOCOL_F_MQ) 
 
 #define SOCKPATH "/usr/local/var/run/openvswitch/vhost-user1"
 
@@ -76,16 +92,20 @@ void print_hex(unsigned char *buff, int len)
 	printf("\n");
 }
 
+#define RECV 1
+
 main()
 {
 	int sockfd;
 	int newsockfd;
 	struct sockaddr_un local,remote;
 	int len,t;
-	unsigned char rxbuff[100],txbuff[100];
+	unsigned char rxbuff[1024],txbuff[1024];
 	int recv_bytes;
+	int fdbytes;
         struct vhost_user_msg *msg;
-
+	struct vhost_vring_file file;
+	//struct virtio_net;
 
 	sockfd = socket(AF_UNIX,SOCK_STREAM,0);
 
@@ -124,6 +144,9 @@ main()
 
 	while(1) {
 
+		memset(rxbuff,0,100);
+
+		#if RECV
 		recv_bytes = recv(newsockfd,rxbuff,12,0);
 
 		msg = (struct vhost_user_msg *) rxbuff;
@@ -134,11 +157,19 @@ main()
 
 
 		printf("received total bytes : %d\n",recv_bytes);
+		#else /*RECVFROM*/
 
-		print_hex(rxbuff,recv_bytes);
+
+		msg = (struct vhost_user_msg *) rxbuff;
+
+		read_vhost_message(newsockfd,msg);
+		#endif
+
+
 
 
 		printf("msg.request : %d name : %s payload size : %d\n",msg->request,req_names[msg->request],msg->size);
+		print_hex(rxbuff,recv_bytes);
 
 		switch(msg->request) {
 
@@ -152,15 +183,21 @@ main()
 				msg->flags |= VHOST_USER_VERSION;
 				msg->flags |= VHOST_USER_REPLY_MASK;
 				send(newsockfd,txbuff,20,0);
+				printf("payload : %016llx\n",msg->payload.u64);
 				printf("sent bytes : %d\n",20);
-				print_hex(txbuff,20);
+				//print_hex(txbuff,20);
 
-			break;
+				break;
 
 			case VHOST_USER_SET_FEATURES:
 			memcpy(txbuff,rxbuff,recv_bytes);
 			msg = (struct vhost_user_msg *) txbuff;
 			printf("payload is %016x\n",msg->payload.u64);
+			printf("Mergeable RX buffers %s, virtio 1 %s\n",
+					(msg->payload.u64 & (1 << VIRTIO_NET_F_MRG_RXBUF)) ? "on" : "off",
+					(msg->payload.u64 & (1ULL << VIRTIO_F_VERSION_1)) ? "on" : "off");
+
+			//eventfd_write(file.fd,(eventfd_t)1);
 			break;
 			
 
@@ -173,30 +210,50 @@ main()
 			msg->flags |= VHOST_USER_VERSION;
 			msg->flags |= VHOST_USER_REPLY_MASK;
 			send(newsockfd,txbuff,20,0);
+			printf("payload : %016llx\n",msg->payload.u64);
 			printf("\n\nsent bytes : %d\n",20);
-			print_hex(txbuff,20);
+			//print_hex(txbuff,20);
 			printf("\n\n");
 
+			break;
+			case  VHOST_USER_SET_PROTOCOL_FEATURES:
+			memcpy(txbuff,rxbuff,recv_bytes);
+			msg = (struct vhost_user_msg *) txbuff;
+			printf("protocol features : %016x and we provided : %016x\n",msg->payload.u64,VHOST_USER_PROTOCOL_FEATURES);	
 			break;
 
 			case VHOST_USER_GET_QUEUE_NUM:
 			memcpy(txbuff,rxbuff,recv_bytes);
 			msg = (struct vhost_user_msg *) txbuff;
 			msg->payload.u64 = 0x8000;
+			//msg->payload.u64 = 1;
 			msg->size = 8;
 			msg->flags &= ~VHOST_USER_VERSION_MASK;
 			msg->flags |= VHOST_USER_VERSION;
 			msg->flags |= VHOST_USER_REPLY_MASK;
 			send(newsockfd,txbuff,20,0);
+			printf("payload : %016llx\n",msg->payload.u64);
 			printf("\n\nsent bytes : %d\n",20);
-			print_hex(txbuff,20);
+			//print_hex(txbuff,20);
 			printf("\n\n");
 			break;
 
 			case VHOST_USER_SET_VRING_CALL:
 			memcpy(txbuff,rxbuff,recv_bytes);
 			msg = (struct vhost_user_msg *) txbuff;
-			printf("payload : %llx\n",msg->payload.u64);
+			fdbytes = recv(newsockfd,&msg->fds[0],4*8,0);
+			printf("fds bytes : %d\n",fdbytes);
+			print_hex(&msg->fds[0],fdbytes);
+			printf("payload : %016llx\n",msg->payload.u64);
+		  	if (msg->payload.u64 & VHOST_USER_VRING_NOFD_MASK) {
+				printf("some issue : fd = -1\n");
+			}
+			file.index = msg->payload.u64 & VHOST_USER_VRING_IDX_MASK;
+			file.fd = msg->fds[0];
+			printf("vring call idx:%d file:%d\n", file.index, file.fd);
+			//eventfd_write(file.fd,(eventfd_t)1);
+
+
 			break;
 
 			case VHOST_USER_SET_VRING_ENABLE:
@@ -209,7 +266,7 @@ main()
 
 
 			default:
-			printf("default\n");
+			printf("\ndefault\n");
 		}
 
 	}

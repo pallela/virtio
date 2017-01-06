@@ -66,7 +66,7 @@ enum vhost_user_request {
         VHOST_USER_MAX
 };
 
-char req_names[][50] = {
+static char req_names[][50] = {
         "VHOST_USER_NONE",
         "VHOST_USER_GET_FEATURES",
         "VHOST_USER_SET_FEATURES",
@@ -157,6 +157,9 @@ struct vhost_user_msg {
         int fds[VHOST_MEMORY_MAX_NREGIONS];
 } __attribute((packed));
 
+
+int read_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num);
+int read_vhost_message(int sockfd, struct vhost_user_msg *msg);
 
 #endif
 
