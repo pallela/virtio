@@ -3,7 +3,9 @@
 #define VIRTIO_H
 
 #include<stdint.h>
+#include<errno.h>
 
+#define VHOST_USER_VERSION    0x1
 
 /* The feature bitmap for virtio net */
 #define VIRTIO_NET_F_CSUM       0       /* Host handles pkts w/ partial csum */
@@ -138,8 +140,9 @@ struct vhost_memory {
         struct vhost_memory_region regions[VHOST_MEMORY_MAX_NREGIONS];
 };
 
+#define offsetof(type, field)  ((size_t) &( ((type *)0)->field) )
 
-struct vhost_user_msg {
+typedef struct vhost_user_msg {
         enum vhost_user_request request;
 
 #define VHOST_USER_VERSION_MASK     0x3
@@ -155,11 +158,41 @@ struct vhost_user_msg {
                 struct vhost_memory memory;
         } payload;
         int fds[VHOST_MEMORY_MAX_NREGIONS];
-} __attribute((packed));
+} __attribute((packed)) VhostUserMsg;
+#define VHOST_USER_HDR_SIZE offsetof(VhostUserMsg, payload.u64)
 
 
 int read_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num);
 int read_vhost_message(int sockfd, struct vhost_user_msg *msg);
+int send_vhost_message(int sockfd, struct vhost_user_msg *msg);
+int send_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num);
+uint64_t get_blk_size(int fd);
+
+/* Macro to align a value to a given power-of-two. The resultant value
+ * will be of the same type as the first parameter, and will be no
+ * bigger than the first parameter. Second parameter must be a
+ * power-of-two value.
+ */
+#define RTE_ALIGN_FLOOR(val, align) \
+        (typeof(val))((val) & (~((typeof(val))((align) - 1))))
+
+/**
+ * Macro to align a pointer to a given power-of-two. The resultant
+ * pointer will be a pointer of the same type as the first parameter, and
+ * point to an address no lower than the first parameter. Second parameter
+ * must be a power-of-two value.
+ */
+#define RTE_PTR_ALIGN_CEIL(ptr, align) \
+        RTE_PTR_ALIGN_FLOOR((typeof(ptr))RTE_PTR_ADD(ptr, (align) - 1), align)
+
+/**
+ * Macro to align a value to a given power-of-two. The resultant value
+ * will be of the same type as the first parameter, and will be no lower
+ * than the first parameter. Second parameter must be a power-of-two
+ * value.
+ */
+#define RTE_ALIGN_CEIL(val, align) \
+        RTE_ALIGN_FLOOR(((val) + ((typeof(val)) (align) - 1)), align)
 
 #endif
 

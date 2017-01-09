@@ -6,9 +6,9 @@
 #include<stdlib.h>
 #include"virtio.h"
 #include <sys/eventfd.h>
+#include<sys/mman.h>
+#include<sys/stat.h>
 
-
-#define VHOST_USER_VERSION    0x1
 
 #define VHOST_USER_F_PROTOCOL_FEATURES  30
 
@@ -75,6 +75,17 @@
 
 #define SOCKPATH "/usr/local/var/run/openvswitch/vhost-user1"
 
+
+
+
+
+void write_to_file(void *addr, uint64_t mapsize,char *fpath)
+{
+	FILE *fp = fopen(fpath,"w");
+	fwrite(addr,1,mapsize,fp);
+	fclose(fp);
+}
+
 void print_hex(unsigned char *buff, int len)
 {
 	int i;
@@ -92,7 +103,7 @@ void print_hex(unsigned char *buff, int len)
 	printf("\n");
 }
 
-#define RECV 1
+#define RECV 0
 
 unsigned char memory_table[100*1024];
 
@@ -103,7 +114,7 @@ main()
 	struct sockaddr_un local,remote;
 	int len,t,i;
 	unsigned char rxbuff[1024],txbuff[1024];
-	int recv_bytes;
+	int recv_bytes,ret;
 	int fdbytes;
         struct vhost_user_msg *msg;
 	struct vhost_vring_file file;
@@ -146,7 +157,8 @@ main()
 
 	while(1) {
 
-		memset(rxbuff,0,100);
+		memset(rxbuff,0,1024);
+		memset(txbuff,0,1024);
 
 		#if RECV
 		recv_bytes = recv(newsockfd,rxbuff,12,0);
@@ -171,131 +183,163 @@ main()
 
 		msg = (struct vhost_user_msg *) rxbuff;
 
-		read_vhost_message(newsockfd,msg);
+		ret = read_vhost_message(newsockfd,msg);
+
+		if(ret == 0) {
+			printf("sleep 5 due to ret = 0\n");
+			sleep(5);
+			continue;
+		}
+		else {
+			printf("ret = %d\n",ret);
+			print_hex(rxbuff,msg->size + 12);
+		}
 		#endif
 
 
 
 
 		printf("msg.request : %d name : %s payload size : %d\n",msg->request,req_names[msg->request],msg->size);
-		print_hex(rxbuff,recv_bytes);
+		//print_hex(rxbuff,recv_bytes);
+		print_hex(rxbuff,msg->size);
 
 		switch(msg->request) {
 
 			case VHOST_USER_GET_FEATURES:
-				memcpy(txbuff,rxbuff,recv_bytes);
-				msg = (struct vhost_user_msg *) txbuff;
-				//msg->payload.u64 = (1ULL << 30);
+				msg = (struct vhost_user_msg *) rxbuff;
 				msg->payload.u64 = VHOST_SUPPORTED_FEATURES;
-				msg->size = 8;
-				msg->flags &= ~VHOST_USER_VERSION_MASK;
-				msg->flags |= VHOST_USER_VERSION;
-				msg->flags |= VHOST_USER_REPLY_MASK;
-				send(newsockfd,txbuff,20,0);
+				msg->size = sizeof(msg->payload.u64);
+				send_vhost_message(newsockfd,msg);
 				printf("payload : %016llx\n",(unsigned long long int)msg->payload.u64);
 				printf("sent bytes : %d\n",20);
-				//print_hex(txbuff,20);
 
 				break;
 
 			case VHOST_USER_SET_FEATURES:
-			memcpy(txbuff,rxbuff,recv_bytes);
-			msg = (struct vhost_user_msg *) txbuff;
-			printf("payload is %016llx\n",(unsigned long long int)msg->payload.u64);
-			printf("Mergeable RX buffers %s, virtio 1 %s\n",
-					(msg->payload.u64 & (1 << VIRTIO_NET_F_MRG_RXBUF)) ? "on" : "off",
-					(msg->payload.u64 & (1ULL << VIRTIO_F_VERSION_1)) ? "on" : "off");
+				msg = (struct vhost_user_msg *) rxbuff;
+				printf("payload is %016llx\n",(unsigned long long int)msg->payload.u64);
+				printf("Mergeable RX buffers %s, virtio 1 %s\n",
+						(msg->payload.u64 & (1 << VIRTIO_NET_F_MRG_RXBUF)) ? "on" : "off",
+						(msg->payload.u64 & (1ULL << VIRTIO_F_VERSION_1)) ? "on" : "off");
 
-			//eventfd_write(file.fd,(eventfd_t)1);
-			break;
-			
+				break;
+
 
 			case  VHOST_USER_GET_PROTOCOL_FEATURES:
-			memcpy(txbuff,rxbuff,recv_bytes);
-			msg = (struct vhost_user_msg *) txbuff;
-			msg->payload.u64 = VHOST_USER_PROTOCOL_FEATURES;
-			msg->size = 8;
-			msg->flags &= ~VHOST_USER_VERSION_MASK;
-			msg->flags |= VHOST_USER_VERSION;
-			msg->flags |= VHOST_USER_REPLY_MASK;
-			send(newsockfd,txbuff,20,0);
-			printf("payload : %016llx\n",(unsigned long long int)msg->payload.u64);
-			printf("\n\nsent bytes : %d\n",20);
-			//print_hex(txbuff,20);
-			printf("\n\n");
+				msg = (struct vhost_user_msg *) rxbuff;
+				msg->payload.u64 = VHOST_USER_PROTOCOL_FEATURES;
+				msg->size = sizeof(msg->payload.u64);
+				send_vhost_message(newsockfd,msg);
+				printf("sent payload : %016llx\n",(unsigned long long int)msg->payload.u64);
+				printf("\n\nsent bytes : %d\n",20);
+				printf("\n\n");
 
-			break;
+				break;
 			case  VHOST_USER_SET_PROTOCOL_FEATURES:
-			memcpy(txbuff,rxbuff,recv_bytes);
-			msg = (struct vhost_user_msg *) txbuff;
-			printf("protocol features : %016llx and we provided : %016llx\n",(unsigned long long int)msg->payload.u64,(unsigned long long int)VHOST_USER_PROTOCOL_FEATURES);	
-			break;
+				msg = (struct vhost_user_msg *) rxbuff;
+				printf("protocol features : %016llx and we provided : %016llx\n",(unsigned long long int)msg->payload.u64,(unsigned long long int)VHOST_USER_PROTOCOL_FEATURES);	
+				break;
 
 			case VHOST_USER_GET_QUEUE_NUM:
-			memcpy(txbuff,rxbuff,recv_bytes);
-			msg = (struct vhost_user_msg *) txbuff;
-			msg->payload.u64 = 0x8000;
-			//msg->payload.u64 = 1;
-			msg->size = 8;
-			msg->flags &= ~VHOST_USER_VERSION_MASK;
-			msg->flags |= VHOST_USER_VERSION;
-			msg->flags |= VHOST_USER_REPLY_MASK;
-			send(newsockfd,txbuff,20,0);
-			printf("payload : %016llx\n",(unsigned long long int)msg->payload.u64);
-			printf("\n\nsent bytes : %d\n",20);
-			//print_hex(txbuff,20);
-			printf("\n\n");
-			break;
+				msg = (struct vhost_user_msg *) rxbuff;
+				msg->payload.u64 = 0x8000;
+				msg->size = sizeof(msg->payload.u64);
+				send_vhost_message(newsockfd,msg);
+				printf("sent payload : %016llx\n",(unsigned long long int)msg->payload.u64);
+				printf("\n\nsent bytes : %d\n",20);
+				printf("\n\n");
+				break;
 
 			case VHOST_USER_SET_VRING_CALL:
-			memcpy(txbuff,rxbuff,recv_bytes);
-			msg = (struct vhost_user_msg *) txbuff;
-			fdbytes = recv(newsockfd,&msg->fds[0],4*8,0);
-			printf("fds bytes : %d\n",fdbytes);
-			print_hex((unsigned char *)&msg->fds[0],fdbytes);
-			printf("payload : %016llx\n",(unsigned long long int)msg->payload.u64);
-		  	if (msg->payload.u64 & VHOST_USER_VRING_NOFD_MASK) {
-				printf("some issue : fd = -1\n");
-			}
-			file.index = msg->payload.u64 & VHOST_USER_VRING_IDX_MASK;
-			file.fd = msg->fds[0];
-			printf("vring call idx:%d file:%d\n", file.index, file.fd);
-			//eventfd_write(file.fd,(eventfd_t)1);
-
-
-			break;
+				msg = (struct vhost_user_msg *) rxbuff;
+				printf("payload : %016llx\n",(unsigned long long int)msg->payload.u64);
+				if (msg->payload.u64 & VHOST_USER_VRING_NOFD_MASK) {
+					printf("some issue : fd = -1\n");
+				}
+				file.index = msg->payload.u64 & VHOST_USER_VRING_IDX_MASK;
+				file.fd = msg->fds[0];
+				printf("vring call idx:%d file:%d\n", file.index, file.fd);
+				break;
 
 			case VHOST_USER_SET_VRING_ENABLE:
-			memcpy(txbuff,rxbuff,recv_bytes);
-			msg = (struct vhost_user_msg *) txbuff;
-			printf("payload.state.index : %u\n",msg->payload.state.index);
-			printf("payload.state.num   : %u\n",msg->payload.state.num);
-			break;
-		
+				msg = (struct vhost_user_msg *) rxbuff;
+				printf("payload.state.index : %u\n",msg->payload.state.index);
+				printf("payload.state.num   : %u\n",msg->payload.state.num);
+				break;
+
 			case VHOST_USER_SET_MEM_TABLE:
-			msg = (struct vhost_user_msg *) txbuff;
-			memcpy(txbuff,rxbuff,recv_bytes);
-			printf("processing VHOST_USER_SET_MEM_TABLE , copying %u bytes\n",msg->size);
-			memcpy(table,&(msg->payload.memory),msg->size);
-			printf("nr_regions : %u\n",table->nregions);
-			printf("padding    : %u\n",table->padding);
+				msg = (struct vhost_user_msg *) rxbuff;
+				printf("processing VHOST_USER_SET_MEM_TABLE , copying %u bytes\n",msg->size);
+				memcpy(table,&(msg->payload.memory),msg->size);
+				printf("nr_regions : %u\n",table->nregions);
+				printf("padding    : %u\n",table->padding);
 
 
-			for(i=0;i<table->nregions;i++) {
-				printf("region[%04d]  gpaddr : %llx memory_size : %llx userspace_addr : %llx mmap_offset : %llx\n",
-				i,
-				(unsigned long long int) table->regions[i].guest_phys_addr,
-				(unsigned long long int) table->regions[i].memory_size,
-				(unsigned long long int) table->regions[i].userspace_addr,
-				(unsigned long long int) table->regions[i].mmap_offset\
-					);
-			}
+				for(i=0;i<table->nregions;i++) {
+					printf("region[%04d]  gpaddr : %llx memory_size : %llx userspace_addr : %llx \
+							mmap_offset : %llx fd[%d] : %d alignment : %llx\n",
+							i,
+							(unsigned long long int) table->regions[i].guest_phys_addr,
+							(unsigned long long int) table->regions[i].memory_size,
+							(unsigned long long int) table->regions[i].userspace_addr,
+							(unsigned long long int) table->regions[i].mmap_offset,
+							i,
+							msg->fds[i],
+							(unsigned long long int) get_blk_size(msg->fds[i])\
+					      );
+
+
+
+
+
+#if 1
+					if(table->regions[i].memory_size) {
+						void *addr;
+						uint64_t mapsize,alignment,mapped_size;
+						alignment = get_blk_size(msg->fds[i]);
+						mapsize = RTE_ALIGN_CEIL(table->regions[i].memory_size +  table->regions[i].mmap_offset,alignment);
+						printf("map size : %llx\n",(unsigned long long int) mapsize);
+						addr = mmap(NULL,mapsize,PROT_READ | PROT_WRITE, MAP_SHARED,msg->fds[i],0);
+						printf("mmap address : %p\n",addr);
+
+						write_to_file(addr,mapsize,"/tmp/image.dat");
+					}
+#endif
+				}
+
+				break;	
+
+			case VHOST_USER_SET_VRING_NUM :
+				{
+				struct vhost_vring_state *tmp;
+				tmp = (struct vhost_vring_state *) &(msg->payload.u64);
+				printf("vvdn debug : state num : %d state index : %d\n",tmp->num,tmp->index);
+				}
+				break;
+			case VHOST_USER_SET_VRING_BASE :
+				{
+					struct vhost_vring_state *tmp;
+					tmp = (struct vhost_vring_state *) &(msg->payload.u64);
+					printf("vvdn debug : state num : %d state index : %d\n",tmp->num,tmp->index);
+				}
+				break;
+			case VHOST_USER_SET_VRING_ADDR :
+				{
+					struct vhost_vring_addr *tmp;
+					tmp = (struct vhost_vring_addr *) &msg->payload.u64;
+					printf("vvdn debug : desc_user_addr : %llx\n",(unsigned long long int) tmp->desc_user_addr);
+					printf("vvdn debug : used_user_addr : %llx\n",(unsigned long long int) tmp->used_user_addr);
+					printf("vvdn debug : avail_user_addr : %llx\n",(unsigned long long int) tmp->avail_user_addr);
+				}
 			
-			break;	
+			break;
 
+			case VHOST_USER_SET_VRING_KICK:
+				printf("vvdn debug :  kick fd : %d index : %llx\n",msg->fds[0], (unsigned long long int)(msg->payload.u64 & VHOST_USER_VRING_IDX_MASK));
+			break;
 
 			default:
-			printf("\ndefault\n");
+				printf("\ndefault\n");
 		}
 
 	}
