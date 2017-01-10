@@ -136,6 +136,11 @@ void snapshot(int signum)
 	int i;
 
 	printf("address translation table : %d entries\n",translation_table_count);
+	printf("GPA              ");
+	printf("QVA              ");
+	printf("VUVA              ");
+	printf("LEN               ");
+	printf("OFFSET            \n");
 	for(i = 0 ;i < translation_table_count ;i ++) {
 		char filename[20];
 		printf("%016llx %016llx %016llx %016llx %016llx\n",
