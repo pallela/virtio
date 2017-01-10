@@ -113,6 +113,11 @@ volatile int rxirqfd = -1;
 struct address_translation translation_table[10];
 int translation_table_count = -1;
 
+struct vring_desc *tx_desc_base;
+int tx_desc_count = 0;
+struct vring_desc *rx_desc_base; 
+int rx_desc_count = 0;
+
 void * transmit_thread(void *args)
 {
 	uint64_t tx_kick_count;
@@ -128,6 +133,60 @@ void * transmit_thread(void *args)
 unsigned char memory_table[100*1024];
 pthread_t tx_thread;
 
+uint64_t guestphyddr_to_vhostvadd(uint64_t gpaddr)
+{
+	int i;
+	uint64_t offset;
+	for(i=0;i<translation_table_count;i++) {
+		if(gpaddr >= translation_table[i].guestphyaddr && gpaddr <=  translation_table[i].guestphyaddr + translation_table[i].len){
+			offset = (gpaddr - translation_table[i].guestphyaddr);
+			printf("found gpaddr : %llx in table entry : %d offset : %llx\n",
+					(unsigned long long int)gpaddr,i,(unsigned long long int)offset);
+			return translation_table[i].vhostuservirtaddr + offset + translation_table[i].offset;
+		}
+	}
+
+	return 0;
+}
+
+uint64_t qemuvaddr_to_vhostvadd(uint64_t qaddr)
+{
+	int i;
+	uint64_t offset;
+	for(i=0;i<translation_table_count;i++) {
+		if(qaddr >= translation_table[i].qemuvirtaddr && qaddr <=  translation_table[i].qemuvirtaddr + translation_table[i].len){
+			offset = (qaddr - translation_table[i].qemuvirtaddr);
+			printf("found qaddr : %llx in table entry : %d offset : %llx\n",
+			(unsigned long long int)qaddr,i,(unsigned long long int)offset);
+			return translation_table[i].vhostuservirtaddr + offset + translation_table[i].offset;
+		}
+	}
+
+	return 0;
+}
+
+void print_desc(struct vring_desc *tmp,int count)
+{
+
+	int i;
+	void *packet_data;
+
+	for(i=0;i<count;i++) {
+		printf("desc[%04d] (%016llx) addr : %016llx len : %08x flags : %04x next : %04x\n",
+				i,(unsigned long long int) &tmp[i],
+				(unsigned long long int) tmp[i].addr,
+				(unsigned int) tmp[i].len,
+				(unsigned int) tmp[i].flags,
+				(unsigned int) tmp[i].next);
+			if(tmp[i].len) {
+				packet_data = (void *) guestphyddr_to_vhostvadd(tmp[i].addr);
+				printf("packet data (%d bytes) at address : %p\n",tmp[i].len,packet_data);
+				print_hex(packet_data,tmp[i].len);
+			}
+	}
+
+
+}
 
 #if 1
 void snapshot(int signum)
@@ -149,9 +208,13 @@ void snapshot(int signum)
 				(unsigned long long int) translation_table[i].vhostuservirtaddr,
 				(unsigned long long int) translation_table[i].len,
 				(unsigned long long int) translation_table[i].offset);
-		sprintf(filename,"part%d.dat",i);
+		//sprintf(filename,"part%d.dat",i);
 		//write_to_file((void *)translation_table[i].vhostuservirtaddr,translation_table[i].len,filename);
 	}
+	printf("Transmit descriptors\n");
+	print_desc(tx_desc_base,tx_desc_count);
+	printf("Receive Descriptors\n");
+	print_desc(rx_desc_base,rx_desc_count);
 }
 #endif
 
@@ -342,13 +405,13 @@ main()
 				file.index = msg->payload.u64 & VHOST_USER_VRING_IDX_MASK;
 				file.fd = msg->fds[0];
 				printf("vring call idx:%d file:%d\n", file.index, file.fd);
-				if(file.index == 0) {
+				if(file.index == 1) {
 					if(txirqfd) {
 						close(txirqfd);
 					}
 					txirqfd =  file.fd;
 				}
-				else if(file.index ==  1) {
+				else if(file.index ==  0) {
 					if(rxirqfd) {
 						close(rxirqfd);
 					}
@@ -414,7 +477,7 @@ main()
 				printf("VUVA              ");
 				printf("LEN               ");
 				printf("OFFSET            \n");
-				#if 0
+				#if 1
 				for(i = 0 ;i < translation_table_count ;i ++) {
 					char filename[20];
 					printf("%016llx %016llx %016llx %016llx %016llx\n",
@@ -423,8 +486,8 @@ main()
 					(unsigned long long int) translation_table[i].vhostuservirtaddr,
 					(unsigned long long int) translation_table[i].len,
 					(unsigned long long int) translation_table[i].offset);
-					sprintf(filename,"part%d.dat",i);
-					write_to_file((void *)translation_table[i].vhostuservirtaddr,translation_table[i].len,filename);
+					//sprintf(filename,"part%d.dat",i);
+					//write_to_file((void *)translation_table[i].vhostuservirtaddr,translation_table[i].len,filename);
 				}
 				#endif
 
@@ -456,6 +519,12 @@ main()
 				struct vhost_vring_state *tmp;
 				tmp = (struct vhost_vring_state *) &(msg->payload.u64);
 				printf("vvdn debug : state num : %d state index : %d\n",tmp->num,tmp->index);
+				if(tmp->index == 1) {
+					tx_desc_count = tmp->num;
+				}
+				else if(tmp->index == 0) {
+					rx_desc_count = tmp->num;
+				}
 				}
 				break;
 			case VHOST_USER_SET_VRING_BASE :
@@ -472,6 +541,20 @@ main()
 					printf("vvdn debug : desc_user_addr : %llx\n",(unsigned long long int) tmp->desc_user_addr);
 					printf("vvdn debug : used_user_addr : %llx\n",(unsigned long long int) tmp->used_user_addr);
 					printf("vvdn debug : avail_user_addr : %llx\n",(unsigned long long int) tmp->avail_user_addr);
+
+					if(tmp->index == 1) {
+						tx_desc_base = (void *) qemuvaddr_to_vhostvadd(tmp->desc_user_addr);
+						printf("tx desc base at addr : %p\n",tx_desc_base);
+						if(tx_desc_count) {
+							print_desc(tx_desc_base,tx_desc_count);
+						}
+
+					}
+					else if(tmp->index == 0) {
+						rx_desc_base = (void *) qemuvaddr_to_vhostvadd(tmp->desc_user_addr);
+						printf("rx desc base at addr : %p\n",rx_desc_base);
+							print_desc(rx_desc_base,rx_desc_count);
+					}
 				}
 			
 			break;
