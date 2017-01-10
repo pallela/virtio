@@ -8,7 +8,8 @@
 #include <sys/eventfd.h>
 #include<sys/mman.h>
 #include<sys/stat.h>
-
+#include<pthread.h>
+#include<signal.h>
 
 #define VHOST_USER_F_PROTOCOL_FEATURES  30
 
@@ -105,7 +106,74 @@ void print_hex(unsigned char *buff, int len)
 
 #define RECV 0
 
+volatile int kickfd = -1;
+volatile int txirqfd = -1;
+volatile int rxirqfd = -1;
+
+struct address_translation translation_table[10];
+int translation_table_count = -1;
+
+void * transmit_thread(void *args)
+{
+	uint64_t tx_kick_count;
+
+	printf("starting transmit thread \n");
+
+	while(1) {
+		printf("kickfd : %d txirqfd : %d rxirqfd : %d\n",kickfd,txirqfd,rxirqfd);
+		sleep(1);
+	}
+}
+
 unsigned char memory_table[100*1024];
+pthread_t tx_thread;
+
+
+#if 1
+void snapshot(int signum)
+{
+
+	int i;
+
+	printf("address translation table : %d entries\n",translation_table_count);
+	for(i = 0 ;i < translation_table_count ;i ++) {
+		char filename[20];
+		printf("%016llx %016llx %016llx %016llx %016llx\n",
+				(unsigned long long int) translation_table[i].guestphyaddr,
+				(unsigned long long int) translation_table[i].qemuvirtaddr,
+				(unsigned long long int) translation_table[i].vhostuservirtaddr,
+				(unsigned long long int) translation_table[i].len,
+				(unsigned long long int) translation_table[i].offset);
+		sprintf(filename,"part%d.dat",i);
+		//write_to_file((void *)translation_table[i].vhostuservirtaddr,translation_table[i].len,filename);
+	}
+}
+#endif
+
+
+#if 1
+void search_pattern(int signum)
+{
+
+	int i,j;
+	int len;
+	unsigned char *mem;
+	char search_str[] = "xilinx virtio string to be searched";
+	unsigned char modify = 0xAB;
+
+	for(i = 0 ;i < translation_table_count ;i ++) {
+		mem =  (unsigned char *) translation_table[i].vhostuservirtaddr;
+		len =  translation_table[i].len;
+		for(j=0;j<len-sizeof(search_str);j++) {
+			if(memcmp(search_str,mem+j,sizeof(search_str)) == 0) {
+				printf("found in part %d at offset : %x\n",i,j);
+				memset(mem+j,modify,sizeof(search_str));
+			}
+		}
+	}
+}
+#endif
+
 
 main()
 {
@@ -119,6 +187,15 @@ main()
         struct vhost_user_msg *msg;
 	struct vhost_vring_file file;
 	struct vhost_memory *table = (struct vhost_memory *) memory_table;
+
+	#if 0
+	if(!pthread_create(&tx_thread,NULL,transmit_thread,NULL)){
+		printf("transmit thread creation failed\n");
+	}
+	#endif
+
+	signal(SIGUSR1,snapshot);
+	signal(SIGUSR2,search_pattern);
 
 	sockfd = socket(AF_UNIX,SOCK_STREAM,0);
 
@@ -242,7 +319,8 @@ main()
 
 			case VHOST_USER_GET_QUEUE_NUM:
 				msg = (struct vhost_user_msg *) rxbuff;
-				msg->payload.u64 = 0x8000;
+				//msg->payload.u64 = 0x8000;
+				msg->payload.u64 = 1;
 				msg->size = sizeof(msg->payload.u64);
 				send_vhost_message(newsockfd,msg);
 				printf("sent payload : %016llx\n",(unsigned long long int)msg->payload.u64);
@@ -259,6 +337,18 @@ main()
 				file.index = msg->payload.u64 & VHOST_USER_VRING_IDX_MASK;
 				file.fd = msg->fds[0];
 				printf("vring call idx:%d file:%d\n", file.index, file.fd);
+				if(file.index == 0) {
+					if(txirqfd) {
+						close(txirqfd);
+					}
+					txirqfd =  file.fd;
+				}
+				else if(file.index ==  1) {
+					if(rxirqfd) {
+						close(rxirqfd);
+					}
+					rxirqfd =  file.fd;
+				}
 				break;
 
 			case VHOST_USER_SET_VRING_ENABLE:
@@ -302,10 +392,57 @@ main()
 						addr = mmap(NULL,mapsize,PROT_READ | PROT_WRITE, MAP_SHARED,msg->fds[i],0);
 						printf("mmap address : %p\n",addr);
 
-						write_to_file(addr,mapsize,"/tmp/image.dat");
+						translation_table[i].guestphyaddr = table->regions[i].guest_phys_addr;
+						translation_table[i].qemuvirtaddr = table->regions[i].userspace_addr;
+						translation_table[i].vhostuservirtaddr = (uint64_t) addr;
+						translation_table[i].len = mapsize;
+						translation_table[i].offset = table->regions[i].mmap_offset;
+
+						//write_to_file(addr,mapsize,"/tmp/image.dat");
 					}
 #endif
 				}
+				translation_table_count = i;
+				printf("address translation table : %d entries\n",translation_table_count);
+				printf("GPA              ");
+				printf("QVA              ");
+				printf("VUVA              ");
+				printf("LEN               ");
+				printf("OFFSET            \n");
+				#if 0
+				for(i = 0 ;i < translation_table_count ;i ++) {
+					char filename[20];
+					printf("%016llx %016llx %016llx %016llx %016llx\n",
+					(unsigned long long int) translation_table[i].guestphyaddr,
+					(unsigned long long int) translation_table[i].qemuvirtaddr,
+					(unsigned long long int) translation_table[i].vhostuservirtaddr,
+					(unsigned long long int) translation_table[i].len,
+					(unsigned long long int) translation_table[i].offset);
+					sprintf(filename,"part%d.dat",i);
+					write_to_file((void *)translation_table[i].vhostuservirtaddr,translation_table[i].len,filename);
+				}
+				#endif
+
+				{
+					unsigned char *a,*b;
+					int matched = 0;
+					int not_matched = 0;
+					a = (unsigned char *) translation_table[0].vhostuservirtaddr;
+					a += translation_table[1].guestphyaddr;
+					a += translation_table[1].offset;
+					b = (unsigned char *) translation_table[1].vhostuservirtaddr;
+					for(i=0;i<1000;i++) {
+						if(a[i] == b[i]) {
+							matched++;
+						}
+						else {
+							not_matched++;
+							break;
+						}
+					}
+					printf("matched : %d and not_matched : %d\n",matched,not_matched);
+				}	
+
 
 				break;	
 
@@ -336,6 +473,10 @@ main()
 
 			case VHOST_USER_SET_VRING_KICK:
 				printf("vvdn debug :  kick fd : %d index : %llx\n",msg->fds[0], (unsigned long long int)(msg->payload.u64 & VHOST_USER_VRING_IDX_MASK));
+				if(kickfd) {
+					close(kickfd);
+				}
+				kickfd = msg->fds[0];
 			break;
 
 			default:

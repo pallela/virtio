@@ -194,5 +194,14 @@ uint64_t get_blk_size(int fd);
 #define RTE_ALIGN_CEIL(val, align) \
         RTE_ALIGN_FLOOR(((val) + ((typeof(val)) (align) - 1)), align)
 
+struct address_translation
+{
+	uint64_t guestphyaddr;
+	uint64_t qemuvirtaddr;
+	uint64_t vhostuservirtaddr;
+	uint64_t len;
+	uint64_t offset;
+};
+
 #endif
 
