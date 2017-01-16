@@ -196,11 +196,11 @@ uint64_t get_blk_size(int fd);
 
 struct address_translation
 {
-	uint64_t guestphyaddr;
-	uint64_t qemuvirtaddr;
-	uint64_t vhostuservirtaddr;
-	uint64_t len;
-	uint64_t offset;
+	volatile uint64_t guestphyaddr;
+	volatile uint64_t qemuvirtaddr;
+	volatile uint64_t vhostuservirtaddr;
+	volatile uint64_t len;
+	volatile uint64_t offset;
 };
 
 /* This marks a buffer as continuing via the next field. */
@@ -224,31 +224,31 @@ struct address_translation
 /* VirtIO ring descriptors: 16 bytes.
  * These can chain together via "next". */
 struct vring_desc {
-        uint64_t addr;  /*  Address (guest-physical). */
-        uint32_t len;   /* Length. */
-        uint16_t flags; /* The flags as indicated above. */
-        uint16_t next;  /* We chain unused descriptors via this. */
+        volatile uint64_t addr;  /*  Address (guest-physical). */
+        volatile uint32_t len;   /* Length. */
+        volatile uint16_t flags; /* The flags as indicated above. */
+        volatile uint16_t next;  /* We chain unused descriptors via this. */
 };
 
 struct vring_avail {
-        uint16_t flags;
-        uint16_t idx;
-        uint16_t ring[0];
+        volatile uint16_t flags;
+        volatile uint16_t idx;
+        volatile uint16_t ring[0];
 };
 
 /* id is a 16bit index. uint32_t is used here for ids for padding reasons. */
 struct vring_used_elem {
         /* Index of start of used descriptor chain. */
-        uint32_t id;
+        volatile uint32_t id;
         /* Total length of the descriptor chain which was written to. */
-        uint32_t len;
+        volatile uint32_t len;
 };
 
 
 struct vring_used {
-        uint16_t flags;
-        uint16_t idx;
-        struct vring_used_elem ring[0];
+        volatile uint16_t flags;
+        volatile uint16_t idx;
+        volatile struct vring_used_elem ring[0];
 };
 
 

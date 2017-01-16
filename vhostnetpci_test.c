@@ -77,7 +77,12 @@
 #define SOCKPATH "/usr/local/var/run/openvswitch/vhost-user1"
 
 
+uint64_t guestphyddr_to_vhostvadd(uint64_t gpaddr);
+uint64_t qemuvaddr_to_vhostvadd(uint64_t qaddr);
 
+#define wmb()   asm volatile("sfence" ::: "memory")
+#define rmb()   asm volatile("lfence" ::: "memory")
+#define barrier() asm volatile("" ::: "memory")
 
 
 void write_to_file(void *addr, uint64_t mapsize,char *fpath)
@@ -113,12 +118,12 @@ volatile int rxirqfd = -1;
 struct address_translation translation_table[10];
 int translation_table_count = -1;
 
-struct vring_desc *tx_desc_base;
+volatile struct vring_desc *tx_desc_base;
 int tx_desc_count = 0;
-struct vring_desc *rx_desc_base; 
+volatile struct vring_desc *rx_desc_base; 
 int rx_desc_count = 0;
-struct vring_avail *tx_avail;
-struct vring_used  *tx_used; 
+volatile struct vring_avail *tx_avail;
+volatile struct vring_used  *tx_used; 
 volatile connected_to_guest = 0;
 uint16_t tx_last_avail_idx;
 uint16_t tx_last_used_idx;
@@ -129,6 +134,9 @@ void * transmit_thread(void *args)
 	int i;
 	uint16_t cur_avail_idx = 0,new_avail_descs = 0;;
 	uint16_t cur_used_idx = 0;
+	int packet_no = 0;
+	unsigned char *packet_addr,packet_len;
+	int desc_no;
 
 	printf("starting transmit thread \n");
 
@@ -139,19 +147,43 @@ void * transmit_thread(void *args)
 
 			cur_avail_idx = tx_last_avail_idx;
 			new_avail_descs = tx_avail->idx - tx_last_avail_idx;
+			rmb();// read correct values before proceeding
 			tx_last_avail_idx = tx_avail->idx;
 
-			printf("cur_avail_idx : %d new_avail_descs : %d\n",cur_avail_idx,new_avail_descs);
+			//printf("cur_avail_idx : %d new_avail_descs : %d\n",cur_avail_idx,new_avail_descs);
 			cur_avail_idx = cur_avail_idx % tx_desc_count;
-			printf("(remainder) cur_avail_idx : %d new_avail_descs : %d\n",cur_avail_idx,new_avail_descs);
+			//printf("(remainder) cur_avail_idx : %d new_avail_descs : %d\n",cur_avail_idx,new_avail_descs);
 
 
-			printf("tx_avail->flags : %04x tx_avail->idx : %04x\n",tx_avail->flags,tx_avail->idx);
+			//printf("tx_avail->flags : %04x tx_avail->idx : %04x\n",tx_avail->flags,tx_avail->idx);
 
 			i = 0;
 			while(new_avail_descs--){
 
-				printf("avail desc [%04d] : %04d\n",cur_avail_idx,tx_avail->ring[cur_avail_idx]);
+				//printf("avail desc [%04d] : %04d\n",cur_avail_idx,tx_avail->ring[cur_avail_idx]);
+				//desc_no = tx_avail->ring[cur_avail_idx];
+
+				printf("packet no : %d\n",packet_no);
+				#if 1
+				while(1) {
+					if(tx_desc_base[desc_no].flags & VRING_DESC_F_NEXT) {
+						packet_addr = (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
+						packet_len = tx_desc_base[desc_no].len;
+						printf("desc no : %d\n",desc_no);;
+						print_hex(packet_addr,packet_len);
+						desc_no = (desc_no + 1)%tx_desc_count;
+					}
+					else {
+						packet_addr = (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
+						packet_len = tx_desc_base[desc_no].len;
+						printf("desc no : %d\n",desc_no);
+						print_hex(packet_addr,packet_len);
+						break;
+					}
+				}
+				#endif
+
+				packet_no++;	
 
 				tx_used->ring[cur_used_idx].id = tx_avail->ring[cur_avail_idx];
 				tx_used->ring[cur_used_idx].len = tx_desc_base[tx_avail->ring[cur_avail_idx]].len;
@@ -162,10 +194,14 @@ void * transmit_thread(void *args)
 				cur_used_idx  = (cur_used_idx + 1) %tx_desc_count;
 
 			}
+			//printf("tx_avail->idx : %d and tx_used->idx: %d\n",tx_avail->idx,tx_used->idx);
+
 
 			eventfd_write(txirqfd, (eventfd_t)1);
+
+			wmb();
 		}
-		sleep(1);
+		usleep(10000);
 	}
 
 
