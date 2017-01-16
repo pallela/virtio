@@ -101,7 +101,7 @@ void print_hex(unsigned char *buff, int len)
 
 		printf("%02x ",buff[i]);
 	}
-	printf("\n");
+	printf("\n\n");
 }
 
 #define RECV 0
@@ -117,17 +117,58 @@ struct vring_desc *tx_desc_base;
 int tx_desc_count = 0;
 struct vring_desc *rx_desc_base; 
 int rx_desc_count = 0;
+struct vring_avail *tx_avail;
+struct vring_used  *tx_used; 
+volatile connected_to_guest = 0;
+uint16_t tx_last_avail_idx;
+uint16_t tx_last_used_idx;
 
 void * transmit_thread(void *args)
 {
 	uint64_t tx_kick_count;
+	int i;
+	uint16_t cur_avail_idx = 0,new_avail_descs = 0;;
+	uint16_t cur_used_idx = 0;
 
 	printf("starting transmit thread \n");
 
+
 	while(1) {
-		printf("kickfd : %d txirqfd : %d rxirqfd : %d\n",kickfd,txirqfd,rxirqfd);
+
+		if(connected_to_guest) {
+
+			cur_avail_idx = tx_last_avail_idx;
+			new_avail_descs = tx_avail->idx - tx_last_avail_idx;
+			tx_last_avail_idx = tx_avail->idx;
+
+			printf("cur_avail_idx : %d new_avail_descs : %d\n",cur_avail_idx,new_avail_descs);
+			cur_avail_idx = cur_avail_idx % tx_desc_count;
+			printf("(remainder) cur_avail_idx : %d new_avail_descs : %d\n",cur_avail_idx,new_avail_descs);
+
+
+			printf("tx_avail->flags : %04x tx_avail->idx : %04x\n",tx_avail->flags,tx_avail->idx);
+
+			i = 0;
+			while(new_avail_descs--){
+
+				printf("avail desc [%04d] : %04d\n",cur_avail_idx,tx_avail->ring[cur_avail_idx]);
+
+				tx_used->ring[cur_used_idx].id = tx_avail->ring[cur_avail_idx];
+				tx_used->ring[cur_used_idx].len = tx_desc_base[tx_avail->ring[cur_avail_idx]].len;
+				tx_used->idx++;
+
+
+				cur_avail_idx = (cur_avail_idx + 1)%tx_desc_count;
+				cur_used_idx  = (cur_used_idx + 1) %tx_desc_count;
+
+			}
+
+			eventfd_write(txirqfd, (eventfd_t)1);
+		}
 		sleep(1);
 	}
+
+
 }
 
 unsigned char memory_table[100*1024];
@@ -185,9 +226,9 @@ void print_desc(struct vring_desc *tmp,int count)
 			}
 	}
 
-
 }
 
+#define PRINT_TX_DESC_AND_PACKETS 1
 #if 1
 void snapshot(int signum)
 {
@@ -211,10 +252,32 @@ void snapshot(int signum)
 		//sprintf(filename,"part%d.dat",i);
 		//write_to_file((void *)translation_table[i].vhostuservirtaddr,translation_table[i].len,filename);
 	}
+
+#if PRINT_TX_DESC_AND_PACKETS
+
 	printf("Transmit descriptors\n");
 	print_desc(tx_desc_base,tx_desc_count);
-	printf("Receive Descriptors\n");
-	print_desc(rx_desc_base,rx_desc_count);
+	//printf("Receive Descriptors\n");
+	//print_desc(rx_desc_base,rx_desc_count);
+#endif
+
+	printf("tx_avail->flags : %04x  tx_avail->idx : %d\n",tx_avail->flags,tx_avail->idx);
+	printf("tx_used->flags : %04x  tx_used->idx : %d\n",tx_used->flags,tx_used->idx);
+
+	for(i = 0;i <= tx_avail->idx; i++) {
+		printf("tx_avail->ring[%05d] = %05d\n",i,tx_avail->ring[i]);
+	}
+	#if 0
+
+	tx_used->flags = 0;
+	tx_used->idx = 2;
+
+	tx_used->ring[0].id = tx_avail->ring[0];
+	tx_used->ring[0].len = tx_desc_base[tx_avail->ring[0]].len;
+	eventfd_write(txirqfd, (eventfd_t)1);
+
+	#endif
+
 }
 #endif
 
@@ -256,7 +319,7 @@ main()
 	struct vhost_vring_file file;
 	struct vhost_memory *table = (struct vhost_memory *) memory_table;
 
-	#if 0
+	#if 1
 	if(!pthread_create(&tx_thread,NULL,transmit_thread,NULL)){
 		printf("transmit thread creation failed\n");
 	}
@@ -546,15 +609,21 @@ main()
 						tx_desc_base = (void *) qemuvaddr_to_vhostvadd(tmp->desc_user_addr);
 						printf("tx desc base at addr : %p\n",tx_desc_base);
 						if(tx_desc_count) {
-							print_desc(tx_desc_base,tx_desc_count);
+							//print_desc(tx_desc_base,tx_desc_count);
 						}
+						tx_used = (void *) qemuvaddr_to_vhostvadd(tmp->used_user_addr);
+						tx_avail = (void *) qemuvaddr_to_vhostvadd(tmp->avail_user_addr);
+						printf("tx_used  at vhostvaddr : %p\n",tx_used);
+						printf("tx_avail at vhostvaddr : %p\n",tx_avail);
 
 					}
 					else if(tmp->index == 0) {
 						rx_desc_base = (void *) qemuvaddr_to_vhostvadd(tmp->desc_user_addr);
 						printf("rx desc base at addr : %p\n",rx_desc_base);
-							print_desc(rx_desc_base,rx_desc_count);
+							//print_desc(rx_desc_base,rx_desc_count);
 					}
+
+					connected_to_guest = 1;
 				}
 			
 			break;
