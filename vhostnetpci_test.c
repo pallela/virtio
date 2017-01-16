@@ -157,14 +157,16 @@ void * transmit_thread(void *args)
 
 			//printf("tx_avail->flags : %04x tx_avail->idx : %04x\n",tx_avail->flags,tx_avail->idx);
 
-			i = 0;
+			//i = 0;
 			while(new_avail_descs--){
+
+				printf("packet no : %d\n",packet_no);
+
+				#if 0
 
 				//printf("avail desc [%04d] : %04d\n",cur_avail_idx,tx_avail->ring[cur_avail_idx]);
 				//desc_no = tx_avail->ring[cur_avail_idx];
 
-				printf("packet no : %d\n",packet_no);
-				#if 1
 				while(1) {
 					if(tx_desc_base[desc_no].flags & VRING_DESC_F_NEXT) {
 						packet_addr = (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
@@ -242,7 +244,7 @@ uint64_t qemuvaddr_to_vhostvadd(uint64_t qaddr)
 	return 0;
 }
 
-void print_desc(struct vring_desc *tmp,int count)
+void print_desc(volatile struct vring_desc *tmp,int count)
 {
 
 	int i;
