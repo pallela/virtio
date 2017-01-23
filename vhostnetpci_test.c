@@ -11,6 +11,7 @@
 #include<pthread.h>
 #include<signal.h>
 
+
 #define VHOST_USER_F_PROTOCOL_FEATURES  30
 
 #define VHOST_SUPPORTS_MQ      (1ULL << VIRTIO_NET_F_MQ)
@@ -36,8 +37,9 @@
 
 
 /* Features supported by this lib. */
-#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_MRG_RXBUF) | \
-                                (1ULL << VIRTIO_NET_F_CTRL_VQ) | \
+//#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_MRG_RXBUF) | \
+
+#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_CTRL_VQ) | \
                                 (1ULL << VIRTIO_NET_F_CTRL_RX) | \
                                 (VHOST_SUPPORTS_MQ)            | \
 				(1ULL << VIRTIO_F_VERSION_1)   | \
@@ -111,6 +113,15 @@ void print_hex(unsigned char *buff, int len)
 
 #define RECV 0
 
+//char sample_rx_buffer[100] = "This is sample rx data This is sample rx data This is sample rx data This is sample rx data This is ";
+char sample_rx_buffer[] =  {
+	0xff,0xff,0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x00,
+	0x00,0x01,0x08,0x06,0x00,0x01,0x08,0x00,0x06,0x04,
+	0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x01,0xc0,0xa8,
+	0x0a,0x0a,0x00,0x00,0x00,0x00,0x00,0x00,0xc0,0xa8,
+	0x0a,0x14
+};
+
 volatile int kickfd = -1;
 volatile int txirqfd = -1;
 volatile int rxirqfd = -1;
@@ -124,19 +135,25 @@ volatile struct vring_desc *rx_desc_base;
 int rx_desc_count = 0;
 volatile struct vring_avail *tx_avail;
 volatile struct vring_used  *tx_used; 
+volatile struct vring_avail *rx_avail;
+volatile struct vring_used  *rx_used; 
 volatile connected_to_guest = 0;
 uint16_t tx_last_avail_idx;
 uint16_t tx_last_used_idx;
+
+static rx_packet_buff[10*1024];
 
 void * transmit_thread(void *args)
 {
 	uint64_t tx_kick_count;
 	int i;
 	uint16_t cur_avail_idx = 0,new_avail_descs = 0;;
-	uint16_t cur_used_idx = 0;
+	uint16_t cur_used_idx = 0,rx_desc_num = 0;
+	uint16_t rx_ring_no = 0,temp;
 	int packet_no = 0;
-	unsigned char *packet_addr,packet_len;
-	int desc_no;
+	unsigned char *packet_addr,packet_len,*tmp;
+	int desc_no,TXB = 0;
+
 
 	printf("starting transmit thread \n");
 
@@ -145,10 +162,11 @@ void * transmit_thread(void *args)
 
 		if(connected_to_guest) {
 
+			temp = tx_avail->idx;
 			cur_avail_idx = tx_last_avail_idx;
-			new_avail_descs = tx_avail->idx - tx_last_avail_idx;
+			new_avail_descs = temp - tx_last_avail_idx ;
 			rmb();// read correct values before proceeding
-			tx_last_avail_idx = tx_avail->idx;
+			tx_last_avail_idx = temp;
 
 			//printf("cur_avail_idx : %d new_avail_descs : %d\n",cur_avail_idx,new_avail_descs);
 			cur_avail_idx = cur_avail_idx % tx_desc_count;
@@ -161,8 +179,13 @@ void * transmit_thread(void *args)
 			while(new_avail_descs--){
 
 				printf("packet no : %d\n",packet_no);
+				desc_no = tx_avail->ring[cur_avail_idx];
+				desc_no = (desc_no + 1)%tx_desc_count;
+				packet_len = tx_desc_base[desc_no].len;
+				TXB +=  packet_len;
+				printf("total sent bytes : %d\n",TXB);
 
-				#if 0
+				#if 1
 
 				//printf("avail desc [%04d] : %04d\n",cur_avail_idx,tx_avail->ring[cur_avail_idx]);
 				//desc_no = tx_avail->ring[cur_avail_idx];
@@ -171,15 +194,36 @@ void * transmit_thread(void *args)
 					if(tx_desc_base[desc_no].flags & VRING_DESC_F_NEXT) {
 						packet_addr = (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
 						packet_len = tx_desc_base[desc_no].len;
-						printf("desc no : %d\n",desc_no);;
+						printf("desc no : %d len : %d\n",desc_no,packet_len);
 						print_hex(packet_addr,packet_len);
 						desc_no = (desc_no + 1)%tx_desc_count;
 					}
 					else {
 						packet_addr = (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
 						packet_len = tx_desc_base[desc_no].len;
-						printf("desc no : %d\n",desc_no);
+						printf("desc no : %d len : %d\n",desc_no,packet_len);
 						print_hex(packet_addr,packet_len);
+
+
+
+						#if 1 /* loopback */
+						printf("loopback packet_no : %d\n",packet_no);
+						tmp = (unsigned char *)guestphyddr_to_vhostvadd(rx_desc_base[rx_desc_num].addr);
+						memset(tmp,0,10);
+						tmp = (unsigned char *)guestphyddr_to_vhostvadd(rx_desc_base[rx_desc_num+1].addr);
+						memcpy(tmp,packet_addr,packet_len);
+						rx_used->ring[rx_ring_no].id = rx_desc_num;
+						rx_used->ring[rx_ring_no].len = 10 + packet_len;
+						rx_desc_num = (rx_desc_num+2)%rx_desc_count;
+						rx_ring_no = (rx_ring_no +1)%rx_desc_count;
+						wmb();
+						rx_used->idx++;
+						wmb();
+						eventfd_write(rxirqfd, (eventfd_t)1);
+						wmb();
+						printf("packets received : %d\n",rx_used->idx);
+						#endif
+
 						break;
 					}
 				}
@@ -189,8 +233,13 @@ void * transmit_thread(void *args)
 
 				tx_used->ring[cur_used_idx].id = tx_avail->ring[cur_avail_idx];
 				tx_used->ring[cur_used_idx].len = tx_desc_base[tx_avail->ring[cur_avail_idx]].len;
+				wmb();
 				tx_used->idx++;
+				wmb();
 
+				//eventfd_write(txirqfd, (eventfd_t)1);
+				
+				printf("packets transmitted %d\n",tx_used->idx);
 
 				cur_avail_idx = (cur_avail_idx + 1)%tx_desc_count;
 				cur_used_idx  = (cur_used_idx + 1) %tx_desc_count;
@@ -199,11 +248,66 @@ void * transmit_thread(void *args)
 			//printf("tx_avail->idx : %d and tx_used->idx: %d\n",tx_avail->idx,tx_used->idx);
 
 
-			eventfd_write(txirqfd, (eventfd_t)1);
-
+			//tx_used->idx = tx_avail->idx;
 			wmb();
+			eventfd_write(txirqfd, (eventfd_t)1);
+			wmb();
+
+
+			#if 0
+			printf("rx_avail->idx : %d\n",rx_avail->idx);
+			for(i=0;i < rx_avail->idx;i++) {
+				printf("rx_avail->ring[%04d] = %04d\n",i,rx_avail->ring[i]);
+		
+			}
+			#endif
+
+			#if 0 /* able to show correctly in VM */
+			if(rx_avail) {
+
+				static int ft = 0;
+				unsigned char  *tmp;
+
+				if(ft == 0)
+				{
+					printf("rx first packet\n");
+
+					tmp = (unsigned char *)guestphyddr_to_vhostvadd(rx_desc_base[0].addr);
+					memset(tmp,0,10);
+					tmp = (unsigned char *)guestphyddr_to_vhostvadd(rx_desc_base[1].addr);
+					memcpy(tmp,sample_rx_buffer,sizeof(sample_rx_buffer));
+					rx_used->ring[0].id = 0;
+					rx_used->ring[0].len = 10 + sizeof(sample_rx_buffer);
+
+
+					tmp = (unsigned char *)guestphyddr_to_vhostvadd(rx_desc_base[2].addr);
+					memset(tmp,0,10);
+					tmp = (unsigned char *)guestphyddr_to_vhostvadd(rx_desc_base[3].addr);
+					memcpy(tmp,sample_rx_buffer,sizeof(sample_rx_buffer));
+					rx_used->ring[1].id = 2;
+					rx_used->ring[1].len = 10 + sizeof(sample_rx_buffer);
+
+					tmp = (unsigned char *)guestphyddr_to_vhostvadd(rx_desc_base[4].addr);
+					memset(tmp,0,10);
+					tmp = (unsigned char *)guestphyddr_to_vhostvadd(rx_desc_base[5].addr);
+					memcpy(tmp,sample_rx_buffer,sizeof(sample_rx_buffer));
+					rx_used->ring[2].id = 4;
+					rx_used->ring[2].len = 10 + sizeof(sample_rx_buffer);
+
+
+					rx_used->idx = 3;
+
+					wmb();
+
+					eventfd_write(rxirqfd, (eventfd_t)1);
+					wmb();
+					ft = 1;
+				}
+			}
+			#endif
 		}
-		usleep(10000);
+		usleep(1000000);
+
 	}
 
 
@@ -257,11 +361,13 @@ void print_desc(volatile struct vring_desc *tmp,int count)
 				(unsigned int) tmp[i].len,
 				(unsigned int) tmp[i].flags,
 				(unsigned int) tmp[i].next);
+			#if 1
 			if(tmp[i].len) {
 				packet_data = (void *) guestphyddr_to_vhostvadd(tmp[i].addr);
 				printf("packet data (%d bytes) at address : %p\n",tmp[i].len,packet_data);
 				print_hex(packet_data,tmp[i].len);
 			}
+			#endif
 	}
 
 }
@@ -293,18 +399,21 @@ void snapshot(int signum)
 
 #if PRINT_TX_DESC_AND_PACKETS
 
-	printf("Transmit descriptors\n");
-	print_desc(tx_desc_base,tx_desc_count);
-	//printf("Receive Descriptors\n");
-	//print_desc(rx_desc_base,rx_desc_count);
+	//printf("Transmit descriptors\n");
+	//print_desc(tx_desc_base,tx_desc_count);
+	printf("Receive Descriptors\n");
+	print_desc(rx_desc_base,rx_desc_count);
 #endif
 
+	#if 0
 	printf("tx_avail->flags : %04x  tx_avail->idx : %d\n",tx_avail->flags,tx_avail->idx);
 	printf("tx_used->flags : %04x  tx_used->idx : %d\n",tx_used->flags,tx_used->idx);
 
 	for(i = 0;i <= tx_avail->idx; i++) {
 		printf("tx_avail->ring[%05d] = %05d\n",i,tx_avail->ring[i]);
 	}
+	#endif
+
 	#if 0
 
 	tx_used->flags = 0;
@@ -571,6 +680,9 @@ main()
 					}
 #endif
 				}
+
+				wmb(); // write barrier so that other cpus can access correct data immediately
+
 				translation_table_count = i;
 				printf("address translation table : %d entries\n",translation_table_count);
 				printf("GPA              ");
@@ -659,9 +771,16 @@ main()
 						rx_desc_base = (void *) qemuvaddr_to_vhostvadd(tmp->desc_user_addr);
 						printf("rx desc base at addr : %p\n",rx_desc_base);
 							//print_desc(rx_desc_base,rx_desc_count);
+						rx_used = (void *) qemuvaddr_to_vhostvadd(tmp->used_user_addr);
+						rx_avail = (void *) qemuvaddr_to_vhostvadd(tmp->avail_user_addr);
+						printf("rx_used  at vhostvaddr : %p\n",rx_used);
+						printf("rx_avail at vhostvaddr : %p\n",rx_avail);
+						rx_used->idx = 0;
 					}
 
-					connected_to_guest = 1;
+					if(tx_avail && rx_avail) {
+						connected_to_guest = 1;
+					}
 				}
 			
 			break;
