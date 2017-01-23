@@ -10,7 +10,7 @@
 #include<sys/stat.h>
 #include<pthread.h>
 #include<signal.h>
-
+#include"pcap_rxtx.h"
 
 #define VHOST_USER_F_PROTOCOL_FEATURES  30
 
@@ -79,12 +79,10 @@
 #define SOCKPATH "/usr/local/var/run/openvswitch/vhost-user1"
 
 
+pcap_t *handle;
 uint64_t guestphyddr_to_vhostvadd(uint64_t gpaddr);
 uint64_t qemuvaddr_to_vhostvadd(uint64_t qaddr);
 
-#define wmb()   asm volatile("sfence" ::: "memory")
-#define rmb()   asm volatile("lfence" ::: "memory")
-#define barrier() asm volatile("" ::: "memory")
 
 
 void write_to_file(void *addr, uint64_t mapsize,char *fpath)
@@ -194,19 +192,21 @@ void * transmit_thread(void *args)
 					if(tx_desc_base[desc_no].flags & VRING_DESC_F_NEXT) {
 						packet_addr = (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
 						packet_len = tx_desc_base[desc_no].len;
-						printf("desc no : %d len : %d\n",desc_no,packet_len);
-						print_hex(packet_addr,packet_len);
+						//printf("desc no : %d len : %d\n",desc_no,packet_len);
+						//print_hex(packet_addr,packet_len);
 						desc_no = (desc_no + 1)%tx_desc_count;
 					}
 					else {
 						packet_addr = (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
 						packet_len = tx_desc_base[desc_no].len;
-						printf("desc no : %d len : %d\n",desc_no,packet_len);
-						print_hex(packet_addr,packet_len);
+						//printf("desc no : %d len : %d\n",desc_no,packet_len);
+						rmb();
+						//print_hex(packet_addr,packet_len);
+						pcap_tx(handle,packet_addr,packet_len);
 
 
 
-						#if 1 /* loopback */
+						#if 0 /* loopback */
 						printf("loopback packet_no : %d\n",packet_no);
 						tmp = (unsigned char *)guestphyddr_to_vhostvadd(rx_desc_base[rx_desc_num].addr);
 						memset(tmp,0,10);
@@ -306,7 +306,8 @@ void * transmit_thread(void *args)
 			}
 			#endif
 		}
-		usleep(1000000);
+		//usleep(1000000);
+		usleep(10000);
 
 	}
 
@@ -315,17 +316,21 @@ void * transmit_thread(void *args)
 
 unsigned char memory_table[100*1024];
 pthread_t tx_thread;
+pthread_t rx_thread;
 
 uint64_t guestphyddr_to_vhostvadd(uint64_t gpaddr)
 {
 	int i;
 	uint64_t offset;
+	uint64_t ret;
 	for(i=0;i<translation_table_count;i++) {
 		if(gpaddr >= translation_table[i].guestphyaddr && gpaddr <=  translation_table[i].guestphyaddr + translation_table[i].len){
 			offset = (gpaddr - translation_table[i].guestphyaddr);
 			printf("found gpaddr : %llx in table entry : %d offset : %llx\n",
 					(unsigned long long int)gpaddr,i,(unsigned long long int)offset);
-			return translation_table[i].vhostuservirtaddr + offset + translation_table[i].offset;
+			ret =  translation_table[i].vhostuservirtaddr + offset + translation_table[i].offset;
+			printf("translated address : %llx\n",(unsigned long long int) ret);
+			return ret;
 		}
 	}
 
@@ -466,9 +471,22 @@ main()
 	struct vhost_vring_file file;
 	struct vhost_memory *table = (struct vhost_memory *) memory_table;
 
+	handle  = pcap_init("eth0");
+	printf("pcap handle : %p\n",handle);
+
 	#if 1
-	if(!pthread_create(&tx_thread,NULL,transmit_thread,NULL)){
+	if(pthread_create(&tx_thread,NULL,transmit_thread,NULL)){
 		printf("transmit thread creation failed\n");
+	}else {
+		printf("transmit thread creation success\n");
+	}
+	#endif
+
+	#if 1
+	if(pthread_create(&rx_thread,NULL,pcap_rx_thread,handle)){
+		printf("receive thread creation failed\n");
+	}else {
+		printf("receive thread creation success\n");
 	}
 	#endif
 

@@ -252,6 +252,9 @@ struct vring_used {
 };
 
 
+#define wmb()   asm volatile("sfence" ::: "memory")
+#define rmb()   asm volatile("lfence" ::: "memory")
+#define barrier() asm volatile("" ::: "memory")
 
 #endif
 
