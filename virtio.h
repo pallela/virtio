@@ -252,6 +252,46 @@ struct vring_used {
 };
 
 
+/**
+ * This is the first element of the scatter-gather list.  If you don't
+ * specify GSO or CSUM features, you can simply ignore the header.
+ */
+struct virtio_net_hdr {
+#define VIRTIO_NET_HDR_F_NEEDS_CSUM 1    /**< Use csum_start,csum_offset*/
+        uint8_t flags;
+#define VIRTIO_NET_HDR_GSO_NONE     0    /**< Not a GSO frame */
+#define VIRTIO_NET_HDR_GSO_TCPV4    1    /**< GSO frame, IPv4 TCP (TSO) */
+#define VIRTIO_NET_HDR_GSO_UDP      3    /**< GSO frame, IPv4 UDP (UFO) */
+#define VIRTIO_NET_HDR_GSO_TCPV6    4    /**< GSO frame, IPv6 TCP */
+#define VIRTIO_NET_HDR_GSO_ECN      0x80 /**< TCP has ECN set */
+        uint8_t gso_type;
+        uint16_t hdr_len;     /**< Ethernet + IP + tcp/udp hdrs */
+        uint16_t gso_size;    /**< Bytes to append to hdr_len per frame */
+        uint16_t csum_start;  /**< Position to start checksumming from */
+        uint16_t csum_offset; /**< Offset after that to place checksum */
+};      
+                
+/**
+ * This is the version of the header to use when the MRG_RXBUF
+ * feature has been negotiated.
+ */             
+struct virtio_net_hdr_mrg_rxbuf {
+        struct   virtio_net_hdr hdr;
+        uint16_t num_buffers; /**< Number of merged rx buffers */
+};      
+
+struct mem_chunks
+{
+	uint64_t addr;
+	uint64_t len;
+};
+
+struct sg_list
+{
+	int num_elements;
+	struct mem_chunks *chunks;
+};
+
 #define wmb()   asm volatile("sfence" ::: "memory")
 #define rmb()   asm volatile("lfence" ::: "memory")
 #define barrier() asm volatile("" ::: "memory")

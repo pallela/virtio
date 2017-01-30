@@ -39,6 +39,7 @@
 /* Features supported by this lib. */
 //#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_MRG_RXBUF) | \
 
+
 #define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_CTRL_VQ) | \
                                 (1ULL << VIRTIO_NET_F_CTRL_RX) | \
                                 (VHOST_SUPPORTS_MQ)            | \
@@ -138,8 +139,11 @@ volatile struct vring_used  *rx_used;
 volatile connected_to_guest = 0;
 uint16_t tx_last_avail_idx;
 uint16_t tx_last_used_idx;
+int vhost_hlen = 0;
 
-static rx_packet_buff[10*1024];
+static unsigned char rx_packet_buff[10*1024];
+static unsigned char tx_packet_buff[10*1024];
+
 
 void * transmit_thread(void *args)
 {
@@ -149,8 +153,12 @@ void * transmit_thread(void *args)
 	uint16_t cur_used_idx = 0,rx_desc_num = 0;
 	uint16_t rx_ring_no = 0,temp;
 	int packet_no = 0;
-	unsigned char *packet_addr,packet_len,*tmp;
+	unsigned char *packet_addr,*tmp;
+	int packet_len;
 	int desc_no,TXB = 0;
+	struct virtio_net_hdr_mrg_rxbuf *packet_hdr;
+	struct vring_desc temp_desc;
+	int tx_buff_len = 0;
 
 
 	printf("starting transmit thread \n");
@@ -176,33 +184,59 @@ void * transmit_thread(void *args)
 			//i = 0;
 			while(new_avail_descs--){
 
-				printf("packet no : %d\n",packet_no);
+				//printf("packet no : %d\n",packet_no);
 				desc_no = tx_avail->ring[cur_avail_idx];
-				desc_no = (desc_no + 1)%tx_desc_count;
+				//desc_no = (desc_no + 1)%tx_desc_count;
 				packet_len = tx_desc_base[desc_no].len;
 				TXB +=  packet_len;
-				printf("total sent bytes : %d\n",TXB);
+				//printf("total sent bytes : %d\n",TXB);
 
 				#if 1
 
 				//printf("avail desc [%04d] : %04d\n",cur_avail_idx,tx_avail->ring[cur_avail_idx]);
 				//desc_no = tx_avail->ring[cur_avail_idx];
+				tx_buff_len = 0;
 
 				while(1) {
-					if(tx_desc_base[desc_no].flags & VRING_DESC_F_NEXT) {
+
+					memcpy((void *)&temp_desc,(void *)&tx_desc_base[desc_no],sizeof(struct vring_desc));
+
+					//if(tx_desc_base[desc_no].flags & VRING_DESC_F_NEXT) {
+					if(temp_desc.flags & VRING_DESC_F_NEXT) {
 						packet_addr = (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
 						packet_len = tx_desc_base[desc_no].len;
-						//printf("desc no : %d len : %d\n",desc_no,packet_len);
+						//printf("(next flag) desc no : %d len : %d\n",desc_no,packet_len);
 						//print_hex(packet_addr,packet_len);
-						desc_no = (desc_no + 1)%tx_desc_count;
+						//desc_no = (desc_no + 1)%tx_desc_count;
+						desc_no = tx_desc_base[desc_no].next;
+						memcpy(tx_packet_buff + tx_buff_len,packet_addr,packet_len);
+						tx_buff_len += packet_len;
 					}
 					else {
 						packet_addr = (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
 						packet_len = tx_desc_base[desc_no].len;
 						//printf("desc no : %d len : %d\n",desc_no,packet_len);
 						rmb();
+						packet_hdr = (struct virtio_net_hdr_mrg_rxbuf*) packet_addr;
+
+						//printf("num buffers : %02x\n",packet_hdr->num_buffers);
+						//printf("flags : %02x\n",packet_hdr->hdr.flags);
+						//printf("gso_type : %02x\n",packet_hdr->hdr.gso_type);
+						//printf("hdr_len : %02x\n",packet_hdr->hdr.hdr_len);
+						//printf("gso_size : %02x\n",packet_hdr->hdr.gso_size);
+						//printf("csum_start : %02x\n",packet_hdr->hdr.csum_start);
+						//printf("csum_offset : %02x\n",packet_hdr->hdr.csum_offset);
+
 						//print_hex(packet_addr,packet_len);
-						pcap_tx(handle,packet_addr,packet_len);
+						//desc_no = tx_desc_base[desc_no].next;
+						//printf("next desc no may be : %d and next desc data len : %d\n",
+						//desc_no,tx_desc_base[desc_no].len);
+						//pcap_tx(handle,packet_addr+vhost_hlen,packet_len-vhost_hlen);
+
+						memcpy(tx_packet_buff + tx_buff_len,packet_addr,packet_len);
+						tx_buff_len += packet_len;
+						//print_hex(tx_packet_buff,tx_buff_len);
+						pcap_tx(handle,tx_packet_buff+vhost_hlen,tx_buff_len-vhost_hlen);
 
 
 
@@ -239,7 +273,7 @@ void * transmit_thread(void *args)
 
 				//eventfd_write(txirqfd, (eventfd_t)1);
 				
-				printf("packets transmitted %d\n",tx_used->idx);
+				//printf("packets transmitted %d\n\n",tx_used->idx);
 
 				cur_avail_idx = (cur_avail_idx + 1)%tx_desc_count;
 				cur_used_idx  = (cur_used_idx + 1) %tx_desc_count;
@@ -307,7 +341,7 @@ void * transmit_thread(void *args)
 			#endif
 		}
 		//usleep(1000000);
-		usleep(10000);
+		usleep(1000);
 
 	}
 
@@ -318,6 +352,7 @@ unsigned char memory_table[100*1024];
 pthread_t tx_thread;
 pthread_t rx_thread;
 
+
 uint64_t guestphyddr_to_vhostvadd(uint64_t gpaddr)
 {
 	int i;
@@ -326,15 +361,56 @@ uint64_t guestphyddr_to_vhostvadd(uint64_t gpaddr)
 	for(i=0;i<translation_table_count;i++) {
 		if(gpaddr >= translation_table[i].guestphyaddr && gpaddr <=  translation_table[i].guestphyaddr + translation_table[i].len){
 			offset = (gpaddr - translation_table[i].guestphyaddr);
-			printf("found gpaddr : %llx in table entry : %d offset : %llx\n",
-					(unsigned long long int)gpaddr,i,(unsigned long long int)offset);
+			//printf("found gpaddr : %llx in table entry : %d offset : %llx\n",
+			//		(unsigned long long int)gpaddr,i,(unsigned long long int)offset);
 			ret =  translation_table[i].vhostuservirtaddr + offset + translation_table[i].offset;
-			printf("translated address : %llx\n",(unsigned long long int) ret);
+			//printf("translated address : %llx\n",(unsigned long long int) ret);
 			return ret;
 		}
 	}
 
 	return 0;
+}
+
+
+int guestphyddr_to_vhostvadd_list(uint64_t gpaddr, int len,struct sg_list *list, int max_list_len)
+{
+	int i;
+	uint64_t offset;
+	uint64_t vhostaddr;
+	uint64_t phystartaddr,phyendaddr;
+	uint64_t rem_len_in_block,len_used;
+
+	list->num_elements = 0;
+
+	while(len) {
+
+		for(i=0;i<translation_table_count;i++) {
+			phystartaddr = translation_table[i].guestphyaddr;
+			phyendaddr = translation_table[i].guestphyaddr + translation_table[i].len;
+			if(gpaddr >= phystartaddr && gpaddr <= phyendaddr){
+
+				offset = (gpaddr - translation_table[i].guestphyaddr);
+
+				vhostaddr =  translation_table[i].vhostuservirtaddr + offset + translation_table[i].offset;
+
+				list->chunks[list->num_elements].addr = vhostaddr;
+				rem_len_in_block = ((translation_table[i].vhostuservirtaddr + translation_table[i].len) - vhostaddr + 1);
+				len_used =  len < rem_len_in_block ? len : rem_len_in_block;
+				len = len - len_used;
+				list->chunks[list->num_elements].len = len_used ;
+
+				list->num_elements++;
+				if(list->num_elements == max_list_len && len) {
+					printf("remaining len to translate : %d\n",len);
+					return -1;
+				}
+			}
+		}
+	}
+
+	return 0;
+
 }
 
 uint64_t qemuvaddr_to_vhostvadd(uint64_t qaddr)
@@ -595,6 +671,16 @@ main()
 						(msg->payload.u64 & (1 << VIRTIO_NET_F_MRG_RXBUF)) ? "on" : "off",
 						(msg->payload.u64 & (1ULL << VIRTIO_F_VERSION_1)) ? "on" : "off");
 
+				if (msg->payload.u64 &
+						((1 << VIRTIO_NET_F_MRG_RXBUF) | (1ULL << VIRTIO_F_VERSION_1))) {
+					vhost_hlen = sizeof(struct virtio_net_hdr_mrg_rxbuf);
+				} else {
+					vhost_hlen = sizeof(struct virtio_net_hdr);
+				}
+
+				printf("vhost_hlen is %d\n",vhost_hlen);
+
+
 				break;
 
 
@@ -809,6 +895,10 @@ main()
 					close(kickfd);
 				}
 				kickfd = msg->fds[0];
+			break;
+			case  VHOST_USER_GET_VRING_BASE :
+			printf("exiting...");
+			exit(0);
 			break;
 
 			default:

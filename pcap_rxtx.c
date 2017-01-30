@@ -36,9 +36,11 @@ pcap_t *pcap_init(char *iname)
 
 extern volatile struct vring_desc *rx_desc_base; 
 extern volatile struct vring_used  *rx_used; 
+extern volatile struct vring_avail *rx_avail;
 extern volatile int rxirqfd;
 extern int rx_desc_count;
 extern volatile connected_to_guest;
+extern int vhost_hlen;
 
 
 uint64_t guestphyddr_to_vhostvadd(uint64_t gpaddr);
@@ -49,15 +51,18 @@ void *pcap_rx_thread(void *arg)
 {
 	struct bpf_program fp;		/* The compiled filter */
 	//char filter_exp[] = "ether dst 00:00:00:00:00:01 ";	/* The filter expression */
-	//char filter_exp[] = "ether dst b8:2a:72:c4:26:45";	/* The filter expression */
-	char filter_exp[] = "";	/* The filter expression */
+	//char filter_exp[] = "ether dst b8:2a:72:c4:26:45 or ether dst ff:ff:ff:ff:ff:ff  or  arp";	/* The filter expression */
+	//char filter_exp[] = "ether dst b8:2a:72:c4:26:45 or  arp";	/* The filter expression */
+	char filter_exp[] = "ether dst 00:00:00:00:00:01 or  arp";	/* The filter expression */
+	//char filter_exp[] = "";	/* The filter expression */
 	struct pcap_pkthdr header;	/* The header that pcap gives us */
 	const u_char *packet;		/* The actual packet */
 	pcap_t *handle;
 	void  *tmp;
-	uint16_t rx_desc_num = 0,rx_ring_no = 0;
+	uint16_t rx_desc_num = 0,rx_header_desc_num = 0,rx_avail_ring_no = 0,rx_used_ring_no = 0;
 	unsigned char  *packet_addr;
 	uint32_t packet_len;
+	uint16_t avail_idx,used_idx;
 
 	handle = (pcap_t *) arg;
 
@@ -86,45 +91,60 @@ void *pcap_rx_thread(void *arg)
 
 			//printf("received a packet with length of [%d]\n", header.len);
 
-			if(packet) {
+			if(packet ) {
 
-				#if 0
 
-				if(memcmp(packet,mac_address,6) == 0) {
-					printf("mac address matched : %02x:%02x:%02x:%02x:%02x:%02x\n",
-							packet_addr[0],
-							packet_addr[1],
-							packet_addr[2],
-							packet_addr[3],
-							packet_addr[4],
-							packet_addr[5]);
-				}
-				else {
+			
+				//printf("vhost rx packet at address : %p len : %d\n",(void *) packet,header.len);
+				//printf("vhost rx packet len : %d\n",header.len);
+
+				avail_idx = rx_avail->idx;
+				used_idx = rx_used->idx;
+
+				if((avail_idx - used_idx) == 0) {
+					printf("Dropping packet\n");
 					continue;
 				}
-				#endif
+				
+				//printf("avail_idx : %d and used_idx : %d diff  : %d\n",avail_idx,used_idx,avail_idx-used_idx);
 
-				printf("vhost rx packet at address : %p\n",(void *) packet);
+
+				rx_desc_num = rx_avail->ring[rx_avail_ring_no];
+				rx_header_desc_num = rx_desc_num;
 				tmp = (void *)guestphyddr_to_vhostvadd(rx_desc_base[rx_desc_num].addr);
-				printf("tmp( virtio header ): %p \n",tmp);
-				memset(tmp,0,10);
-				printf("virtio header done\n");
-				tmp = (void *)guestphyddr_to_vhostvadd(rx_desc_base[rx_desc_num+1].addr);
-				printf("tmp ( packet data ): %p \n",tmp);
+				//printf("header desc no : %d\n",rx_desc_num);
+				//printf("tmp( virtio header ): %p \n",tmp);
+				memset(tmp,0,vhost_hlen);
+				//printf("virtio header done\n");
+				rx_desc_num = rx_desc_base[rx_desc_num].next;
+				//printf("packet data desc no : %d\n",rx_desc_num);
+
+				if(rx_desc_base[rx_desc_num].len < header.len) {
+					printf("receive desc buff len : %d and packet len : %d ,so dropping packet\n"
+					,rx_desc_base[rx_desc_num].len,header.len);
+					continue;
+				}
+				//printf("receive desc buff len : %d and packet len : %d\n",rx_desc_base[rx_desc_num].len,header.len);
+
+				tmp = (void *)guestphyddr_to_vhostvadd(rx_desc_base[rx_desc_num].addr);
+				//printf("tmp ( packet data ): %p \n",tmp);
 				packet_len = header.len;
 				memcpy(tmp,packet_addr,packet_len);
-				printf("packet copied to VM memory\n");
+				//printf("packet copied to VM memory\n");
+				rx_avail_ring_no = (rx_avail_ring_no + 1)%rx_desc_count;
 				wmb();
-				rx_used->ring[rx_ring_no].id = rx_desc_num;
-				rx_used->ring[rx_ring_no].len = 10 + packet_len;
-				rx_desc_num = (rx_desc_num+2)%rx_desc_count;
-				rx_ring_no = (rx_ring_no +1)%rx_desc_count;
+
+				//rx_used->ring[rx_used_ring_no].id = rx_desc_num;
+				rx_used->ring[rx_used_ring_no].id = rx_header_desc_num;
+				rx_used->ring[rx_used_ring_no].len = vhost_hlen + packet_len;
+				//rx_desc_num = (rx_desc_num+2)%rx_desc_count;
+				rx_used_ring_no = (rx_used_ring_no +1)%rx_desc_count;
 				wmb();
 				rx_used->idx++;
 				wmb();
 				eventfd_write(rxirqfd, (eventfd_t)1);
 				wmb();
-				printf("packets received : %d\n",rx_used->idx);
+				//printf("packets received : %d\n",rx_used->idx);
 			}
 			else {
 				//printf("packet address is NULL\n");
