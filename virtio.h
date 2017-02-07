@@ -201,6 +201,7 @@ struct address_translation
 	volatile uint64_t vhostuservirtaddr;
 	volatile uint64_t len;
 	volatile uint64_t offset;
+	int mapfd;
 };
 
 /* This marks a buffer as continuing via the next field. */
@@ -295,6 +296,62 @@ struct sg_list
 #define wmb()   asm volatile("sfence" ::: "memory")
 #define rmb()   asm volatile("lfence" ::: "memory")
 #define barrier() asm volatile("" ::: "memory")
+
+
+#define VHOST_USER_F_PROTOCOL_FEATURES  30
+
+#define VHOST_SUPPORTS_MQ      (1ULL << VIRTIO_NET_F_MQ)
+#define VHOST_F_LOG_ALL 26
+/* Features supported by this lib. */
+
+
+#define VHOST_USER_PROTOCOL_F_MQ        0
+#define VHOST_USER_PROTOCOL_F_LOG_SHMFD 1
+#define VHOST_USER_PROTOCOL_F_RARP      2
+
+/*
+#define VHOST_USER_PROTOCOL_FEATURES    ((1ULL << VHOST_USER_PROTOCOL_F_MQ) | \
+                                         (1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD) |\
+                                         (1ULL << VHOST_USER_PROTOCOL_F_RARP))
+*/
+
+
+#define VHOST_USER_PROTOCOL_FEATURES    (1ULL << VHOST_USER_PROTOCOL_F_MQ) 
+
+
+
+#if 0
+#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_MRG_RXBUF) | \
+                                (1ULL << VIRTIO_NET_F_CTRL_VQ) | \
+                                (1ULL << VIRTIO_NET_F_CTRL_RX) | \
+                                (1ULL << VIRTIO_NET_F_GUEST_ANNOUNCE) | \
+                                (VHOST_SUPPORTS_MQ)            | \
+                                (1ULL << VIRTIO_F_VERSION_1)   | \
+                                (1ULL << VHOST_F_LOG_ALL)      | \
+                                (1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
+                                (1ULL << VIRTIO_NET_F_HOST_TSO4) | \
+                                (1ULL << VIRTIO_NET_F_HOST_TSO6) | \
+                                (1ULL << VIRTIO_NET_F_CSUM)    | \
+                                (1ULL << VIRTIO_NET_F_GUEST_CSUM) | \
+                                (1ULL << VIRTIO_NET_F_GUEST_TSO4) | \
+                                (1ULL << VIRTIO_NET_F_GUEST_TSO6))
+#endif
+
+
+/* Features supported by this lib. */
+//#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_MRG_RXBUF) | \
+
+
+#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_CTRL_VQ) | \
+                                (1ULL << VIRTIO_NET_F_CTRL_RX) | \
+				(1ULL << VIRTIO_F_VERSION_1)   | \
+                                (1ULL << VHOST_F_LOG_ALL)      | \
+                                (1ULL << VHOST_USER_F_PROTOCOL_FEATURES))
+
+
+
+
+
 
 #endif
 

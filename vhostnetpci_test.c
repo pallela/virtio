@@ -11,71 +11,7 @@
 #include<pthread.h>
 #include<signal.h>
 #include"pcap_rxtx.h"
-
-#define VHOST_USER_F_PROTOCOL_FEATURES  30
-
-#define VHOST_SUPPORTS_MQ      (1ULL << VIRTIO_NET_F_MQ)
-#define VHOST_F_LOG_ALL 26
-/* Features supported by this lib. */
-
-#if 0
-#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_MRG_RXBUF) | \
-                                (1ULL << VIRTIO_NET_F_CTRL_VQ) | \
-                                (1ULL << VIRTIO_NET_F_CTRL_RX) | \
-                                (1ULL << VIRTIO_NET_F_GUEST_ANNOUNCE) | \
-                                (VHOST_SUPPORTS_MQ)            | \
-                                (1ULL << VIRTIO_F_VERSION_1)   | \
-                                (1ULL << VHOST_F_LOG_ALL)      | \
-                                (1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
-                                (1ULL << VIRTIO_NET_F_HOST_TSO4) | \
-                                (1ULL << VIRTIO_NET_F_HOST_TSO6) | \
-                                (1ULL << VIRTIO_NET_F_CSUM)    | \
-                                (1ULL << VIRTIO_NET_F_GUEST_CSUM) | \
-                                (1ULL << VIRTIO_NET_F_GUEST_TSO4) | \
-                                (1ULL << VIRTIO_NET_F_GUEST_TSO6))
-#endif
-
-
-/* Features supported by this lib. */
-//#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_MRG_RXBUF) | \
-
-
-#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_CTRL_VQ) | \
-                                (1ULL << VIRTIO_NET_F_CTRL_RX) | \
-                                (VHOST_SUPPORTS_MQ)            | \
-				(1ULL << VIRTIO_F_VERSION_1)   | \
-                                (1ULL << VHOST_F_LOG_ALL)      | \
-                                (1ULL << VHOST_USER_F_PROTOCOL_FEATURES))
-
-
-
-/*#define VHOST_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_MRG_RXBUF) | \
-                                (1ULL << VIRTIO_NET_F_CTRL_VQ) | \
-                                (1ULL << VIRTIO_NET_F_CTRL_RX) | \
-                                (1ULL << VIRTIO_NET_F_GUEST_ANNOUNCE) | \
-                                (1ULL << VIRTIO_F_VERSION_1)   | \
-                                (1ULL << VHOST_F_LOG_ALL)      | \
-                                (1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
-                                (1ULL << VIRTIO_NET_F_HOST_TSO4) | \
-                                (1ULL << VIRTIO_NET_F_HOST_TSO6) | \
-                                (1ULL << VIRTIO_NET_F_CSUM)    | \
-                                (1ULL << VIRTIO_NET_F_GUEST_CSUM) | \
-                                (1ULL << VIRTIO_NET_F_GUEST_TSO4) | \
-                                (1ULL << VIRTIO_NET_F_GUEST_TSO6))
-*/
-
-#define VHOST_USER_PROTOCOL_F_MQ        0
-#define VHOST_USER_PROTOCOL_F_LOG_SHMFD 1
-#define VHOST_USER_PROTOCOL_F_RARP      2
-
-/*
-#define VHOST_USER_PROTOCOL_FEATURES    ((1ULL << VHOST_USER_PROTOCOL_F_MQ) | \
-                                         (1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD) |\
-                                         (1ULL << VHOST_USER_PROTOCOL_F_RARP))
-*/
-
-
-#define VHOST_USER_PROTOCOL_FEATURES    (1ULL << VHOST_USER_PROTOCOL_F_MQ) 
+#include<semaphore.h>
 
 #define SOCKPATH "/usr/local/var/run/openvswitch/vhost-user1"
 
@@ -136,10 +72,17 @@ volatile struct vring_avail *tx_avail;
 volatile struct vring_used  *tx_used; 
 volatile struct vring_avail *rx_avail;
 volatile struct vring_used  *rx_used; 
+
+volatile int tx_vring_ready = 0, rx_vring_ready = 0;
+
 volatile connected_to_guest = 0;
 uint16_t tx_last_avail_idx;
 uint16_t tx_last_used_idx;
 int vhost_hlen = 0;
+
+sem_t tx_start_wait_sem,rx_start_wait_sem;
+sem_t tx_clean_wait_sem,rx_clean_wait_sem;
+
 
 static unsigned char rx_packet_buff[10*1024];
 static unsigned char tx_packet_buff[10*1024];
@@ -159,6 +102,7 @@ void * transmit_thread(void *args)
 	struct virtio_net_hdr_mrg_rxbuf *packet_hdr;
 	struct vring_desc temp_desc;
 	int tx_buff_len = 0;
+	int tx_cleanup_required = 0;
 
 
 	printf("starting transmit thread \n");
@@ -341,6 +285,19 @@ void * transmit_thread(void *args)
 			#endif
 		}
 		//usleep(1000000);
+		else {
+			cur_used_idx = 0;
+			cur_avail_idx = 0;
+			if(tx_cleanup_required) {
+				tx_cleanup_required = 0;
+				printf("tx thread, cleanup done\n");
+				sem_post(&tx_clean_wait_sem);
+			}
+			printf("tx thread, waiting for connection\n");
+			sem_wait(&tx_start_wait_sem);
+			tx_cleanup_required = 1;
+			printf("tx thread, starting processing now\n");
+		}
 		usleep(1000);
 
 	}
@@ -547,6 +504,12 @@ main()
 	struct vhost_vring_file file;
 	struct vhost_memory *table = (struct vhost_memory *) memory_table;
 
+
+	sem_init(&tx_start_wait_sem,0,0);
+	sem_init(&rx_start_wait_sem,0,0);
+	sem_init(&tx_clean_wait_sem,0,0);
+	sem_init(&rx_clean_wait_sem,0,0);
+
 	handle  = pcap_init("eth0");
 	printf("pcap handle : %p\n",handle);
 
@@ -635,8 +598,48 @@ main()
 		ret = read_vhost_message(newsockfd,msg);
 
 		if(ret == 0) {
-			printf("sleep 5 due to ret = 0\n");
-			sleep(5);
+			int check;
+			printf("sleep 5 due to ret = 0, vm might be shutdown\n");
+			if(connected_to_guest && tx_avail && rx_avail && tx_vring_ready && rx_vring_ready) {
+				connected_to_guest = 0;
+				//sleep(5);
+				printf("sockfd closed : waiting for rx thread and tx thread to cleanup\n");
+				check = sem_wait(&tx_clean_wait_sem);
+				printf("check  : %d\n",check);
+				printf("sockfd closed : tx cleanup done for poweroff\n");
+				check = sem_wait(&rx_clean_wait_sem);
+				printf("check  : %d\n",check);
+				printf("sockfd closed : rx cleanup done for poweroff\n");
+				tx_last_avail_idx = 0;
+				printf("sockfd closed : unmapping translation table\n");
+				{
+					int i;
+					for(i=0;i<translation_table_count;i++ ) {
+						munmap((void *)translation_table[i].vhostuservirtaddr,translation_table[i].len);
+						close(translation_table[i].mapfd);
+					}
+					translation_table_count = -1;
+				}
+				tx_avail = NULL;
+				tx_vring_ready = 0;
+				rx_avail = NULL;
+				rx_vring_ready = 0;	
+				close(txirqfd); txirqfd = -1;
+				close(rxirqfd); rxirqfd = -1;
+				close(kickfd); kickfd = -1;
+			}else {
+				printf("already get_vring_base must have done cleanup\n");
+			}
+			close(newsockfd);
+			printf("waiting for new connection\n");
+			if((newsockfd = accept(sockfd,(struct sockaddr *)&remote,&t)) == -1) {
+				perror("accept : ");
+				exit(1);
+			}
+
+			printf("connected\n");
+
+
 			continue;
 		}
 		else {
@@ -720,23 +723,39 @@ main()
 				file.fd = msg->fds[0];
 				printf("vring call idx:%d file:%d\n", file.index, file.fd);
 				if(file.index == 1) {
-					if(txirqfd) {
+					if(txirqfd > 0) {
 						close(txirqfd);
 					}
 					txirqfd =  file.fd;
 				}
 				else if(file.index ==  0) {
-					if(rxirqfd) {
+					if(rxirqfd > 0) {
 						close(rxirqfd);
 					}
 					rxirqfd =  file.fd;
 				}
+
+
 				break;
 
 			case VHOST_USER_SET_VRING_ENABLE:
 				msg = (struct vhost_user_msg *) rxbuff;
 				printf("payload.state.index : %u\n",msg->payload.state.index);
 				printf("payload.state.num   : %u\n",msg->payload.state.num);
+				if(msg->payload.state.index == 0) {
+					rx_vring_ready = 1;
+					printf("rx vring is ready when rx_avail : %p and tx_avail : %p\n",rx_avail,tx_avail);
+				}
+				else if(msg->payload.state.index == 1) {
+					tx_vring_ready = 1;
+					printf("tx vring is ready when rx_avail : %p and tx_avail : %p\n",rx_avail,tx_avail);
+				}
+				if(tx_avail && rx_avail && tx_vring_ready && rx_vring_ready && !connected_to_guest) {
+					connected_to_guest = 1;
+					printf("Now connected to guest\n");
+					sem_post(&tx_start_wait_sem);
+					sem_post(&rx_start_wait_sem);
+				}
 				break;
 
 			case VHOST_USER_SET_MEM_TABLE:
@@ -779,6 +798,7 @@ main()
 						translation_table[i].vhostuservirtaddr = (uint64_t) addr;
 						translation_table[i].len = mapsize;
 						translation_table[i].offset = table->regions[i].mmap_offset;
+						translation_table[i].mapfd = msg->fds[i];
 
 						//write_to_file(addr,mapsize,"/tmp/image.dat");
 					}
@@ -882,9 +902,12 @@ main()
 						rx_used->idx = 0;
 					}
 
+					#if 0
 					if(tx_avail && rx_avail) {
 						connected_to_guest = 1;
+						printf("Now connected to guest\n");
 					}
+					#endif
 				}
 			
 			break;
@@ -897,8 +920,64 @@ main()
 				kickfd = msg->fds[0];
 			break;
 			case  VHOST_USER_GET_VRING_BASE :
-			printf("exiting...");
-			exit(0);
+			//printf("exiting...");
+			//exit(0);
+			{
+				msg = (struct vhost_user_msg *) rxbuff;
+				struct vhost_vring_state *state;
+				state = &msg->payload.state;
+				printf("state->index : %d  state->num : %d ",state->index,state->num);
+				if(state->index == 0) {
+					connected_to_guest = 0;
+					printf("get_vring_base : waiting for tx to cleanup\n");
+					sem_wait(&rx_clean_wait_sem);
+					printf("get_vring_base : tx cleanup done\n");
+					state->num = rx_used->idx;
+					rx_avail = NULL;
+					rx_vring_ready = 0;
+					//close(rxirqfd);
+					//rxirqfd = -1;
+				}
+				else if( state->index == 1) {
+					connected_to_guest = 0;
+					printf("get_vring_base : waiting for rx to cleanup\n");
+					sem_wait(&tx_clean_wait_sem);
+					printf("get_vring_base : rx cleanup done\n");
+					state->num = tx_used->idx;
+					//close(txirqfd);
+					//txirqfd = -1;
+					tx_avail =  NULL;
+					tx_vring_ready = 0;
+					tx_last_avail_idx = 0;
+				}
+			#if 0
+				if(txirqfd == -1 && rxirqfd == -1) {
+					close(kickfd);
+					kickfd = -1;
+				}
+				#endif
+			}
+			#if 1
+			if(tx_avail == NULL && rx_avail == NULL && tx_vring_ready == 0 && rx_vring_ready == 0 ) {
+				printf("get_vring_base : unmapping translation table\n");
+				{
+					int i;
+					for(i=0;i<translation_table_count;i++ ) {
+						munmap((void *)translation_table[i].vhostuservirtaddr,translation_table[i].len);
+						close(translation_table[i].mapfd);
+					}
+					translation_table_count = -1;
+				}
+				close(txirqfd); txirqfd = -1;
+				close(rxirqfd); rxirqfd = -1;
+				close(kickfd); kickfd = -1;
+			}
+			#endif
+
+			msg->size = sizeof(msg->payload.state);
+			printf("msg->size : %d\n",msg->size);
+			send_vhost_message(newsockfd,msg);
+
 			break;
 
 			default:
